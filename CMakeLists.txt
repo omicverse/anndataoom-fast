@@ -1,0 +1,44 @@
+cmake_minimum_required(VERSION 3.18)
+project(anndataoom_fast LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+option(AOF_NATIVE "Tune for the build machine (-march=native); off for wheels" OFF)
+
+find_package(Python 3.9 COMPONENTS Interpreter Development.Module REQUIRED)
+find_package(OpenMP REQUIRED)
+execute_process(
+  COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+  OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE nanobind_ROOT)
+find_package(nanobind CONFIG REQUIRED)
+
+# libdeflate (MIT), decompression side only, built into the extension.
+set(LIBDEFLATE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libdeflate)
+add_library(aof_deflate STATIC
+  ${LIBDEFLATE_DIR}/lib/deflate_decompress.c
+  ${LIBDEFLATE_DIR}/lib/zlib_decompress.c
+  ${LIBDEFLATE_DIR}/lib/adler32.c
+  ${LIBDEFLATE_DIR}/lib/utils.c
+  ${LIBDEFLATE_DIR}/lib/x86/cpu_features.c
+  ${LIBDEFLATE_DIR}/lib/arm/cpu_features.c)
+target_include_directories(aof_deflate PUBLIC ${LIBDEFLATE_DIR})
+set_target_properties(aof_deflate PROPERTIES C_VISIBILITY_PRESET hidden)
+
+nanobind_add_module(_core NB_STATIC
+  src/cpp/bindings.cpp
+  src/cpp/reader.cpp
+  src/cpp/kernels.cpp)
+target_link_libraries(_core PRIVATE aof_deflate OpenMP::OpenMP_CXX)
+# No -ffast-math, and no implicit a*b+c -> fma contraction: results must be
+# bit-identical across machines and between native and portable builds.
+target_compile_options(_core PRIVATE -O3 -fno-math-errno -ffp-contract=off)
+if(AOF_NATIVE)
+  target_compile_options(_core PRIVATE -march=native)
+endif()
+
+install(TARGETS _core LIBRARY DESTINATION anndataoom_fast)
