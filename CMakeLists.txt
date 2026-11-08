@@ -34,7 +34,9 @@ nanobind_add_module(_core NB_STATIC
   src/cpp/reader.cpp
   src/cpp/kernels.cpp
   src/cpp/knn.cpp
-  src/cpp/fuzzy.cpp)
+  src/cpp/fuzzy.cpp
+  src/cpp/umap.cpp
+  src/cpp/groupstats.cpp)
 target_link_libraries(_core PRIVATE aof_deflate OpenMP::OpenMP_CXX)
 # No -ffast-math, and no implicit a*b+c -> fma contraction: results must be
 # bit-identical across machines and between native and portable builds.
@@ -44,3 +46,15 @@ if(AOF_NATIVE)
 endif()
 
 install(TARGETS _core LIBRARY DESTINATION anndataoom_fast)
+
+# Exact port of leidenalg (RBConfigurationVertexPartition) -- separate module.
+nanobind_add_module(_leiden_cpp NB_STATIC
+  src/cpp/leiden/bindings_leiden.cpp
+  src/cpp/leiden/leiden.cpp)
+target_link_libraries(_leiden_cpp PRIVATE OpenMP::OpenMP_CXX)
+# Bit-exact floating point vs libleidenalg: no -ffast-math, no fma contraction.
+target_compile_options(_leiden_cpp PRIVATE -O3 -fno-math-errno -ffp-contract=off)
+if(AOF_NATIVE)
+  target_compile_options(_leiden_cpp PRIVATE -march=native)
+endif()
+install(TARGETS _leiden_cpp LIBRARY DESTINATION anndataoom_fast)

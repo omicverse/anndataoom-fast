@@ -317,6 +317,10 @@ KnnResult knn_ivf(const float* X, int64_t n, int64_t d, const KnnParams& p,
     res.n_probe = P;
     res.indices.assign((size_t)n * k, -1);
     res.distances.assign((size_t)n * k, kInf);
+    // Candidates are ranked by the expanded form ||c||^2 - 2 q.c in float32,
+    // whose cancellation error can swap near-ties at the k-th position; keep
+    // a few spares and choose the final k by exactly recomputed distances.
+    const int64_t kh = std::min<int64_t>(n - 1, k + 8);
     const int64_t B = std::max<int64_t>(1, p.block);
     const int64_t n_blocks = (n + B - 1) / B;
 
@@ -328,9 +332,9 @@ KnnResult knn_ivf(const float* X, int64_t n, int64_t d, const KnnParams& p,
         std::vector<uint64_t> pairs((size_t)B * P);
         std::vector<float> Qbuf, out, Qc;
         std::vector<int64_t> qlist;
-        std::vector<float> hd((size_t)B * k);
-        std::vector<int64_t> hid((size_t)B * k);
-        std::vector<std::pair<double, int64_t>> fin(k);
+        std::vector<float> hd((size_t)B * kh);
+        std::vector<int64_t> hid((size_t)B * kh);
+        std::vector<std::pair<double, int64_t>> fin(kh);
 
         double st[5] = {0, 0, 0, 0, 0};
         auto now = [] { return std::chrono::steady_clock::now(); };
@@ -368,7 +372,7 @@ KnnResult knn_ivf(const float* X, int64_t n, int64_t d, const KnnParams& p,
             st[0] += since(T0); T0 = now();
             // 2. Scan each probed cluster once for all queries that need it.
             std::sort(pairs.begin(), pairs.begin() + q * P);
-            for (int64_t i = 0; i < q * k; ++i) { hd[i] = kInf; hid[i] = -1; }
+            for (int64_t i = 0; i < q * kh; ++i) { hd[i] = kInf; hid[i] = -1; }
             int64_t a = 0;
             while (a < q * P) {
                 const int64_t c = (int64_t)(pairs[a] >> 32);
@@ -390,7 +394,7 @@ KnnResult knn_ivf(const float* X, int64_t n, int64_t d, const KnnParams& p,
                 for (int64_t r = 0; r < mq; ++r) {
                     const int64_t i = qlist[r], self = s0 + i;
                     const float qn = xn[self];
-                    Heap h{&hd[i * k], &hid[i * k], k};
+                    Heap h{&hd[i * kh], &hid[i * kh], kh};
                     const float* row = &Qg[r * m];
                     for (int64_t g0 = 0; g0 < m; g0 += 64) {
                         const int64_t g1 = std::min(m, g0 + 64);
@@ -413,8 +417,8 @@ KnnResult knn_ivf(const float* X, int64_t n, int64_t d, const KnnParams& p,
             for (int64_t i = 0; i < q; ++i) {
                 const float* xq = &Qbuf[i * d];
                 int64_t cnt = 0;
-                for (int64_t j = 0; j < k; ++j) {
-                    const int64_t sp = hid[i * k + j];
+                for (int64_t j = 0; j < kh; ++j) {
+                    const int64_t sp = hid[i * kh + j];
                     if (sp < 0) continue;
                     const float* xc = X + order[sp] * d;
                     double s = 0;
@@ -425,6 +429,7 @@ KnnResult knn_ivf(const float* X, int64_t n, int64_t d, const KnnParams& p,
                     fin[cnt++] = {s, order[sp]};
                 }
                 std::sort(fin.begin(), fin.begin() + cnt);
+                cnt = std::min(cnt, k);
                 const int64_t orow = order[s0 + i];
                 for (int64_t j = 0; j < cnt; ++j) {
                     res.indices[orow * k + j] = fin[j].second;

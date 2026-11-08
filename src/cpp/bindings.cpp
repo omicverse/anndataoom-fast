@@ -10,6 +10,8 @@
 #include "kernels.hpp"
 #include "knn.hpp"
 #include "fuzzy.hpp"
+#include "umap.hpp"
+#include "groupstats.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -278,6 +280,73 @@ NB_MODULE(_core, m) {
                               np(std::move(r.sigmas)), np(std::move(r.rhos)));
     }, "knn_indices"_a, "knn_dists"_a, "n_neighbors"_a, "local_connectivity"_a = 1.0,
        "set_op_mix_ratio"_a = 1.0, "bandwidth"_a = 1.0);
+
+    m.def("umap_optimize_euclidean", [](nb::ndarray<float, nb::ndim<2>, nb::c_contig, nb::device::cpu> emb,
+                                        In1<int32_t> head, In1<int32_t> tail, In1<double> eps,
+                                        In1<int64_t> rng_state, double a, double b, double gamma,
+                                        double initial_alpha, double negative_sample_rate, int n_epochs,
+                                        bool move_other, bool parallel) {
+        if (rng_state.shape(0) != 3) throw std::invalid_argument("rng_state must have 3 entries");
+        const int64_t E = head.shape(0);
+        if ((int64_t)tail.shape(0) != E || (int64_t)eps.shape(0) != E)
+            throw std::invalid_argument("head/tail/epochs_per_sample length mismatch");
+        UmapSgdParams p;
+        p.a = a; p.b = b; p.gamma = gamma; p.initial_alpha = initial_alpha;
+        p.negative_sample_rate = negative_sample_rate; p.n_epochs = n_epochs;
+        p.move_other = move_other; p.parallel = parallel;
+        nb::gil_scoped_release g;
+        umap_optimize_euclidean(emb.data(), emb.shape(0), (int)emb.shape(1), head.data(), tail.data(), E,
+                                eps.data(), rng_state.data(), p);
+    }, "embedding"_a, "head"_a, "tail"_a, "epochs_per_sample"_a, "rng_state"_a, "a"_a, "b"_a,
+       "gamma"_a, "initial_alpha"_a, "negative_sample_rate"_a, "n_epochs"_a, "move_other"_a = true,
+       "parallel"_a = false);
+
+    m.def("csr_matvec", [](In1<int64_t> indptr, In1<int32_t> indices, In1<double> data, In1<double> x) {
+        const int64_t n = indptr.shape(0) - 1;
+        std::vector<double> y(n);
+        {
+            nb::gil_scoped_release g;
+            csr_matvec(indptr.data(), indices.data(), data.data(), n, x.data(), y.data());
+        }
+        return np(std::move(y));
+    }, "indptr"_a, "indices"_a, "data"_a, "x"_a);
+
+    m.def("group_pass", [](const CSRSource& src, In1<int32_t> group, int64_t n_groups,
+                           In1<int32_t> col_map, In1<float> recip, bool log1p) {
+        auto gr = vec(group);
+        auto cm = vec(col_map);
+        auto rc = vec(recip);
+        int64_t K = 0;
+        for (int32_t v : cm) K = std::max<int64_t>(K, (int64_t)v + 1);
+        GroupPassResult r;
+        {
+            nb::gil_scoped_release g;
+            r = group_pass(src, gr, n_groups, cm, rc, log1p);
+        }
+        return nb::make_tuple(np2t(std::move(r.sum), n_groups, K), np2t(std::move(r.sumsq), n_groups, K),
+                              np2t(std::move(r.nnz), n_groups, K));
+    }, "src"_a, "group"_a, "n_groups"_a, "col_map"_a, "recip"_a, "log1p"_a);
+
+    auto bind_group_stats = [&](auto vtag, auto itag) {
+        using V = decltype(vtag);
+        using I = decltype(itag);
+        m.def("group_stats_csr", [](In1<int64_t> indptr, In1<I> indices, In1<V> data, int64_t n_cols,
+                                    In1<int64_t> order, In1<int64_t> offsets) {
+            const int64_t C = offsets.shape(0) - 1;
+            GroupStats r;
+            {
+                nb::gil_scoped_release g;
+                r = group_stats_csr<V, I>(indptr.data(), indices.data(), data.data(), n_cols,
+                                          order.data(), offsets.data(), C);
+            }
+            return nb::make_tuple(np2t(std::move(r.sum), C, n_cols), np2t(std::move(r.sumsq), C, n_cols),
+                                  np2t(std::move(r.nnz), C, n_cols));
+        }, "indptr"_a, "indices"_a, "data"_a, "n_cols"_a, "order"_a, "offsets"_a);
+    };
+    bind_group_stats(float{}, int32_t{});
+    bind_group_stats(float{}, int64_t{});
+    bind_group_stats(double{}, int32_t{});
+    bind_group_stats(double{}, int64_t{});
 
     m.def("extract_scaled", [](const CSRSource& src, In1<uint8_t> row_keep, In1<int32_t> col_map,
                                In1<double> mean, In1<double> sd, In1<float> recip, bool log1p,

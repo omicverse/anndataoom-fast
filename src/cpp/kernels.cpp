@@ -283,6 +283,54 @@ void pearson_zero_terms(const std::vector<double>& s_unique, const std::vector<d
 }
 
 // ---------------------------------------------------------------------------
+GroupPassResult group_pass(const CSRSource& src, const std::vector<int32_t>& group, int64_t C,
+                           const std::vector<int32_t>& col_map, const std::vector<float>& recip,
+                           bool log1p) {
+    check_len(group.size(), src.n_rows, "group");
+    check_len(col_map.size(), src.n_cols, "col_map");
+    check_len(recip.size(), src.n_rows, "recip");
+    int64_t K = 0;
+    for (int32_t m : col_map) K = std::max<int64_t>(K, (int64_t)m + 1);
+    // Slots hold 3 x C x K doubles; keep them within ~2 GB.  The slot count
+    // only bounds parallelism, never the result.
+    const double slot_bytes = 3.0 * (double)C * (double)K * 8.0;
+    const int slots = std::max(2, std::min(default_slots(), (int)(2e9 / std::max(slot_bytes, 1.0))));
+    OrderedGeneSums acc(3, C * K, slots);
+    dispatch_values(src, [&](auto tag) {
+        using V = decltype(tag);
+        for_each_block<V>(src, &acc.reducer(), [&](int64_t, int slot, const Block<V>& b) {
+            double* s1 = acc.slot(slot, 0);
+            double* s2 = acc.slot(slot, 1);
+            double* nz = acc.slot(slot, 2);
+            for (int64_t row = b.row0; row < b.row1; ++row) {
+                const int32_t g = group[row];
+                if (g < 0) continue;
+                const float rc = recip[row];
+                double* t1 = s1 + (int64_t)g * K;
+                double* t2 = s2 + (int64_t)g * K;
+                double* tz = nz + (int64_t)g * K;
+                for (int64_t e = b.begin(row); e < b.end(row); ++e) {
+                    const int32_t m = col_map[b.col[e]];
+                    if (m < 0) continue;
+                    float v = (float)b.val[e] * rc;
+                    if (log1p) v = log1p_f32(v);
+                    const double vd = (double)v;
+                    t1[m] += vd;
+                    t2[m] += vd * vd;
+                    tz[m] += 1.0;
+                }
+            }
+        });
+        return 0;
+    });
+    GroupPassResult r;
+    r.sum = acc.take(0);
+    r.sumsq = acc.take(1);
+    r.nnz = acc.take(2);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
 ScaledCSR extract_scaled(const CSRSource& src, const std::vector<uint8_t>& row_keep,
                          const std::vector<int32_t>& col_map, const std::vector<double>& mean,
                          const std::vector<double>& sd, const std::vector<float>& recip,

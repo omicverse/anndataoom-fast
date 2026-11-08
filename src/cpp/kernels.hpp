@@ -75,6 +75,17 @@ void pearson_zero_terms(const std::vector<double>& s_unique, const std::vector<d
                         const std::vector<double>& sums_genes, double sum_total, double theta,
                         double clip, std::vector<double>& z1, std::vector<double>& z2);
 
+// ---- per-group statistics of the (normalised, log1p) matrix ---------------
+// For every group c and kept gene m: sum, sum of squares and stored-entry
+// count of v = log1p(x * recip) (or x * recip without log1p).  group[r] < 0
+// skips the row.  Returned arrays are n_groups x K, row-major.
+struct GroupPassResult {
+    std::vector<double> sum, sumsq, nnz;
+};
+GroupPassResult group_pass(const CSRSource& src, const std::vector<int32_t>& group, int64_t n_groups,
+                           const std::vector<int32_t>& col_map, const std::vector<float>& recip,
+                           bool log1p);
+
 // ---- pass 4: extract the scaled HVG matrix --------------------------------
 struct ScaledCSR {
     int64_t n_rows = 0, n_cols = 0;

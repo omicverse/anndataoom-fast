@@ -1,0 +1,99 @@
+import numpy as np
+import pytest
+import scipy.sparse as sp
+
+import anndataoom_fast as aof
+from anndataoom_fast import _core
+from anndataoom_fast._markers import cosg, group_stats
+from anndataoom_fast._neighbors import fuzzy_simplicial_set, knn
+
+
+def _blobs(n=4000, d=20, k=12, seed=0):
+    rng = np.random.default_rng(seed)
+    centers = rng.normal(0, 6, size=(k, d))
+    lab = rng.integers(0, k, n)
+    return (centers[lab] + rng.normal(size=(n, d))).astype(np.float32), lab
+
+
+def test_knn_exact_matches_bruteforce():
+    X, _ = _blobs()
+    idx, dist = knn(X, 15, exact=True)
+    D = ((X[:, None, :].astype(np.float64) - X[None, :, :]) ** 2).sum(-1)
+    ref = np.argsort(D, axis=1, kind="stable")[:, :15]
+    assert np.array_equal(idx[:, 0], np.arange(len(X)))
+    same = np.mean([set(a) == set(b) for a, b in zip(idx, ref)])
+    assert same == 1.0
+    np.testing.assert_allclose(dist[:, 1:], np.sqrt(np.take_along_axis(D, idx[:, 1:], 1)), rtol=1e-5)
+
+
+def test_knn_approx_recall_and_threads():
+    X, _ = _blobs(6000)
+    ie, _ = knn(X, 15, exact=True)
+    outs = []
+    for nt in (1, 5):
+        aof.set_num_threads(nt)
+        outs.append(knn(X, 15))
+    assert all(np.array_equal(a, b) for a, b in zip(outs[0], outs[1]))
+    recall = np.mean([len(set(a[1:]) & set(b[1:])) / 14 for a, b in zip(outs[0][0], ie)])
+    assert recall > 0.99
+
+
+def test_fuzzy_simplicial_set_matches_umap_learn():
+    umap_ = pytest.importorskip("umap.umap_")
+    X, _ = _blobs(3000)
+    idx, dist = knn(X, 15)
+    U, us, ur = umap_.fuzzy_simplicial_set(sp.coo_matrix((len(X), 1)), 15, None, None,
+                                           knn_indices=idx, knn_dists=dist)
+    U = U.tocsr()
+    U.sort_indices()
+    G, s, r = fuzzy_simplicial_set(idx, dist, 15, return_sigmas_rhos=True)
+    assert np.array_equal(s, us) and np.array_equal(r, ur)
+    assert np.array_equal(G.indptr, U.indptr) and np.array_equal(G.indices, U.indices)
+    assert np.array_equal(G.data, U.data)
+
+
+def test_umap_first_epoch_matches_umap_learn_and_is_deterministic():
+    umap_ = pytest.importorskip("umap.umap_")
+    from umap.layouts import optimize_layout_euclidean
+    X, _ = _blobs(2000)
+    idx, dist = knn(X, 15)
+    G = fuzzy_simplicial_set(idx, dist, 15).tocoo()
+    a, b = umap_.find_ab_params(1.0, 0.5)
+    rs = np.random.RandomState(0)
+    init = rs.uniform(0, 10, size=(G.shape[0], 2)).astype(np.float32)
+    eps = umap_.make_epochs_per_sample(G.data, 20)
+    rng = rs.randint(-2 ** 31 + 1, 2 ** 31 - 2, 3).astype(np.int64)
+    e1 = optimize_layout_euclidean(init.copy(), init.copy(), G.row, G.col, 1, G.shape[1], eps, a, b,
+                                   rng.copy(), 1.0, 1.0, 5, parallel=False, move_other=True)
+    e2 = init.copy()
+    _core.umap_optimize_euclidean(e2, G.row.astype(np.int32), G.col.astype(np.int32), eps,
+                                  rng.copy(), a, b, 1.0, 1.0, 5.0, 1, True, False)
+    assert np.array_equal(e1, e2)  # no negative samples in epoch 0: no fastmath effects yet
+    aof.set_num_threads(1)
+    y1 = aof.umap(G.tocsr(), n_epochs=30)
+    aof.set_num_threads(4)
+    y4 = aof.umap(G.tocsr(), n_epochs=30)
+    assert np.array_equal(y1, y4)
+
+
+def test_group_stats_and_cosg_against_dense():
+    rng = np.random.default_rng(1)
+    X = sp.random(3000, 400, density=0.05, random_state=2, format="csr", dtype=np.float32)
+    X.data = np.log1p(X.data * 10).astype(np.float32)
+    lab = rng.integers(0, 7, 3000).astype(str)
+    groups, sizes, S, Q, Z = group_stats(X, lab)
+    D = X.toarray().astype(np.float64)
+    for ci, g in enumerate(groups):
+        m = lab == g
+        np.testing.assert_allclose(S[ci], D[m].sum(0), rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(Q[ci], (D[m] ** 2).sum(0), rtol=1e-12, atol=1e-12)
+        assert np.array_equal(Z[ci], (X[m] != 0).sum(0).A1)
+    from sklearn.metrics.pairwise import cosine_similarity
+    onehot = np.stack([(lab == g).astype(float) for g in groups])
+    cos = cosine_similarity(D.T, onehot)
+    e2 = cos ** 2
+    lam = e2 / e2.sum(1, keepdims=True) * cos
+    out = cosg(X, lab, np.array([f"g{i}" for i in range(400)]), n_genes=20)
+    for ci, g in enumerate(groups):
+        np.testing.assert_allclose(out["scores"][g], np.sort(lam[:, ci])[::-1][:20].astype(np.float32),
+                                   rtol=1e-6)
