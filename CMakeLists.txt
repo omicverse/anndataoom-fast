@@ -32,7 +32,9 @@ set_target_properties(aof_deflate PROPERTIES C_VISIBILITY_PRESET hidden)
 nanobind_add_module(_core NB_STATIC
   src/cpp/bindings.cpp
   src/cpp/reader.cpp
-  src/cpp/kernels.cpp)
+  src/cpp/kernels.cpp
+  src/cpp/knn.cpp
+  src/cpp/fuzzy.cpp)
 target_link_libraries(_core PRIVATE aof_deflate OpenMP::OpenMP_CXX)
 # No -ffast-math, and no implicit a*b+c -> fma contraction: results must be
 # bit-identical across machines and between native and portable builds.

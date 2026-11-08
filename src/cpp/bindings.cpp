@@ -8,6 +8,8 @@
 #include <omp.h>
 
 #include "kernels.hpp"
+#include "knn.hpp"
+#include "fuzzy.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -21,6 +23,14 @@ template <class T>
 using Out1 = nb::ndarray<nb::numpy, T, nb::ndim<1>>;
 using D2In = nb::ndarray<const double, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 using D2Out = nb::ndarray<nb::numpy, double, nb::ndim<2>>;
+using F2In = nb::ndarray<const float, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
+
+template <class T>
+nb::ndarray<nb::numpy, T, nb::ndim<2>> np2t(std::vector<T>&& v, size_t r, size_t c) {
+    auto* p = new std::vector<T>(std::move(v));
+    nb::capsule owner(p, [](void* x) noexcept { delete static_cast<std::vector<T>*>(x); });
+    return nb::ndarray<nb::numpy, T, nb::ndim<2>>(p->data(), {r, c}, owner);
+}
 
 template <class T>
 std::vector<T> vec(const In1<T>& a) {
@@ -232,6 +242,42 @@ NB_MODULE(_core, m) {
         }
         return np2(std::move(C), n, mm);
     }, "A"_a, "B"_a, "A @ B for tall A, row-parallel and deterministic.");
+
+    m.def("knn_ivf", [](F2In X, int64_t k, In1<int64_t> init, int64_t n_probe, int kmeans_iters,
+                        int64_t block) {
+        KnnParams p;
+        p.k = k;
+        p.n_probe = n_probe;
+        p.kmeans_iters = kmeans_iters;
+        p.block = block;
+        auto ini = vec(init);
+        const int64_t n = X.shape(0), d = X.shape(1);
+        KnnResult r;
+        {
+            nb::gil_scoped_release g;
+            r = knn_ivf(X.data(), n, d, p, ini);
+        }
+        const size_t kk = (size_t)std::min<int64_t>(k, n - 1);
+        return nb::make_tuple(np2t(std::move(r.indices), n, kk), np2t(std::move(r.distances), n, kk),
+                              r.n_clusters, r.n_probe);
+    }, "X"_a, "k"_a, "init"_a, "n_probe"_a, "kmeans_iters"_a, "block"_a = 256);
+
+    m.def("fuzzy_simplicial_set", [](nb::ndarray<const int64_t, nb::ndim<2>, nb::c_contig, nb::device::cpu> idx,
+                                     F2In dist, double n_neighbors, double local_connectivity,
+                                     double set_op_mix_ratio, double bandwidth) {
+        const int64_t n = idx.shape(0), k = idx.shape(1);
+        if ((int64_t)dist.shape(0) != n || (int64_t)dist.shape(1) != k)
+            throw std::invalid_argument("knn_indices and knn_dists differ in shape");
+        FuzzyResult r;
+        {
+            nb::gil_scoped_release g;
+            r = fuzzy_simplicial_set(idx.data(), dist.data(), n, k, n_neighbors, local_connectivity,
+                                     set_op_mix_ratio, bandwidth);
+        }
+        return nb::make_tuple(np(std::move(r.indptr)), np(std::move(r.indices)), np(std::move(r.data)),
+                              np(std::move(r.sigmas)), np(std::move(r.rhos)));
+    }, "knn_indices"_a, "knn_dists"_a, "n_neighbors"_a, "local_connectivity"_a = 1.0,
+       "set_op_mix_ratio"_a = 1.0, "bandwidth"_a = 1.0);
 
     m.def("extract_scaled", [](const CSRSource& src, In1<uint8_t> row_keep, In1<int32_t> col_map,
                                In1<double> mean, In1<double> sd, In1<float> recip, bool log1p,
