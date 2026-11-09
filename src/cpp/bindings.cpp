@@ -76,6 +76,10 @@ NB_MODULE(_core, m) {
              }),
              "path"_a, "dtype"_a, "n_elems"_a, "chunk_elems"_a, "chunk_addr"_a,
              "chunk_nbytes"_a, "chunk_mask"_a, "filters"_a)
+        .def_static("from_buffer", [](nb::ndarray<nb::ndim<1>, nb::c_contig, nb::device::cpu> a, int dtype) {
+                 // The Python caller keeps `a` alive for the Dataset's lifetime.
+                 return std::make_shared<Dataset>(a.data(), (DType)dtype, (int64_t)a.shape(0));
+             }, "array"_a, "dtype"_a)
         .def_prop_ro("size", &Dataset::size)
         .def_prop_ro("chunked", &Dataset::chunked)
         .def("read", [](const Dataset& d, int64_t e0, int64_t e1) {
@@ -118,6 +122,10 @@ NB_MODULE(_core, m) {
         d["mt"] = np(std::move(r.mt));
         d["ribo"] = np(std::move(r.ribo));
         d["hb"] = np(std::move(r.hb));
+        d["mt_sum"] = np(std::move(r.mt_sum));
+        d["ribo_sum"] = np(std::move(r.ribo_sum));
+        d["hb_sum"] = np(std::move(r.hb_sum));
+        d["nnz_pos"] = np(std::move(r.nnz_pos));
         d["keep"] = np(std::move(r.keep));
         d["g_stored"] = np(std::move(r.g_stored));
         d["g_nonzero"] = np(std::move(r.g_nonzero));
@@ -146,7 +154,7 @@ NB_MODULE(_core, m) {
                            In1<uint8_t> excl, In1<double> sums_genes, double target_sum,
                            bool log1p, bool do_scale, bool do_pearson, double theta, double clip,
                            double sum_total, std::optional<In1<double>> cells_override,
-                           std::optional<In1<float>> recip_override) {
+                           std::optional<In1<float>> recip_override, bool mu_f32_product) {
         StatsParams p;
         p.target_sum = target_sum;
         p.log1p = log1p;
@@ -155,6 +163,7 @@ NB_MODULE(_core, m) {
         p.theta = theta;
         p.clip = clip;
         p.sum_total = sum_total;
+        p.mu_f32_product = mu_f32_product;
         if (cells_override) p.cells_override = vec(*cells_override);
         if (recip_override) p.recip_override = vec(*recip_override);
         auto rk = vec(row_keep);
@@ -179,18 +188,19 @@ NB_MODULE(_core, m) {
         return d;
     }, "src"_a, "row_keep"_a, "col_map"_a, "excl"_a, "sums_genes"_a, "target_sum"_a,
        "log1p"_a, "do_scale"_a, "do_pearson"_a, "theta"_a, "clip"_a, "sum_total"_a,
-       "cells_override"_a = nb::none(), "recip_override"_a = nb::none());
+       "cells_override"_a = nb::none(), "recip_override"_a = nb::none(), "mu_f32_product"_a = false);
 
     m.def("pearson_zero_terms", [](In1<double> s_unique, In1<double> mult, In1<double> sums_genes,
-                                   double sum_total, double theta, double clip) {
+                                   double sum_total, double theta, double clip, bool mu_f32_product) {
         auto su = vec(s_unique), mu = vec(mult), sg = vec(sums_genes);
         std::vector<double> z1, z2;
         {
             nb::gil_scoped_release g;
-            pearson_zero_terms(su, mu, sg, sum_total, theta, clip, z1, z2);
+            pearson_zero_terms(su, mu, sg, sum_total, theta, clip, z1, z2, mu_f32_product);
         }
         return nb::make_tuple(np(std::move(z1)), np(std::move(z2)));
-    }, "s_unique"_a, "mult"_a, "sums_genes"_a, "sum_total"_a, "theta"_a, "clip"_a);
+    }, "s_unique"_a, "mult"_a, "sums_genes"_a, "sum_total"_a, "theta"_a, "clip"_a,
+       "mu_f32_product"_a = false);
 
     nb::class_<ScaledOperator>(m, "ScaledOperator")
         .def_prop_ro("shape", [](const ScaledOperator& o) {
@@ -310,6 +320,20 @@ NB_MODULE(_core, m) {
         }
         return np(std::move(y));
     }, "indptr"_a, "indices"_a, "data"_a, "x"_a);
+
+    m.def("scale_dense", [](const CSRSource& src, In1<uint8_t> row_keep, In1<int32_t> col_map,
+                            In1<double> mean, In1<double> sd, double clip,
+                            nb::ndarray<double, nb::ndim<2>, nb::c_contig, nb::device::cpu> out) {
+        auto rk = vec(row_keep);
+        auto cm = vec(col_map);
+        auto mu = vec(mean), s = vec(sd);
+        int64_t kept = 0;
+        for (auto v : rk) kept += v != 0;
+        if ((int64_t)out.shape(0) != kept || (int64_t)out.shape(1) != (int64_t)mu.size())
+            throw std::invalid_argument("out has the wrong shape");
+        nb::gil_scoped_release g;
+        scale_dense(src, rk, cm, mu, s, clip, out.data());
+    }, "src"_a, "row_keep"_a, "col_map"_a, "mean"_a, "std"_a, "clip"_a, "out"_a);
 
     m.def("group_pass", [](const CSRSource& src, In1<int32_t> group, int64_t n_groups,
                            In1<int32_t> col_map, In1<float> recip, bool log1p) {

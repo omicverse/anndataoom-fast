@@ -127,3 +127,26 @@ def read_rows(path: str, key: str, r0: int, r1: int):
         shape = tuple(int(x) for x in g.attrs["shape"])
         return sp.csr_matrix((g["data"][a:b], g["indices"][a:b], ip - a),
                              shape=(r1 - r0, shape[1]))
+
+
+@dataclass
+class MemoryCSR:
+    """An in-memory scipy CSR matrix exposed to the C++ engine (zero copy)."""
+    shape: tuple[int, int]
+    src: "_core.CSRSource"
+    indptr: np.ndarray
+    refs: tuple  # keeps the numpy buffers alive while src is in use
+
+
+def memory_csr(X, target_block_elems: int = 1 << 21) -> MemoryCSR:
+    """Wrap a scipy CSR matrix for the C++ passes without copying data/indices."""
+    import scipy.sparse as sp
+    if not sp.issparse(X) or X.format != "csr":
+        X = sp.csr_matrix(X)
+    data = np.ascontiguousarray(X.data)
+    indices = np.ascontiguousarray(X.indices)
+    indptr = np.ascontiguousarray(X.indptr, dtype=np.int64)
+    d = _core.Dataset.from_buffer(data, _dtype_code(data.dtype))
+    ix = _core.Dataset.from_buffer(indices, _dtype_code(indices.dtype))
+    src = _core.CSRSource(d, ix, indptr, int(X.shape[1]), target_block_elems)
+    return MemoryCSR(tuple(int(s) for s in X.shape), src, indptr, (data, indices, indptr, d, ix))

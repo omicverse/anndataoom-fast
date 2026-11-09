@@ -71,6 +71,12 @@ Dataset::Dataset(std::string path, DType dtype, int64_t n_elems, int64_t chunk_e
     fd_ = open_ro(path_);
 }
 
+Dataset::Dataset(const void* data, DType dtype, int64_t n_elems)
+    : dtype_(dtype), esz_(dtype_size(dtype)), n_elems_(n_elems), chunked_(false),
+      mem_(static_cast<const unsigned char*>(data)) {
+    if (!data && n_elems) throw std::invalid_argument("null buffer");
+}
+
 Dataset::~Dataset() {
     if (fd_ >= 0) ::close(fd_);
 }
@@ -152,6 +158,10 @@ void Dataset::decode_chunk(int64_t c, ReadScratch& s) const {
 void Dataset::read_native(int64_t e0, int64_t e1, unsigned char* out, ReadScratch& s) const {
     if (e0 < 0 || e1 > n_elems_ || e0 > e1) throw std::out_of_range("dataset range");
     if (e0 == e1) return;
+    if (mem_) {
+        std::memcpy(out, mem_ + e0 * (int64_t)esz_, (std::size_t)(e1 - e0) * esz_);
+        return;
+    }
     if (!chunked_) {
         pread_full(out, (std::size_t)(e1 - e0) * esz_, offset_ + e0 * (int64_t)esz_);
         return;
@@ -194,6 +204,10 @@ template <class T>
 void Dataset::read_as(int64_t e0, int64_t e1, T* out, ReadScratch& s) const {
     if (e0 < 0 || e1 > n_elems_ || e0 > e1) throw std::out_of_range("dataset range");
     if (e0 == e1) return;
+    if (mem_) {
+        convert_any(dtype_, mem_ + e0 * (int64_t)esz_, out, e1 - e0);
+        return;
+    }
     if (!chunked_) {
         s.native.resize((std::size_t)(e1 - e0) * esz_);
         read_native(e0, e1, s.native.data(), s);

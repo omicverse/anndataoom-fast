@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import scipy.sparse as sp
 
 from . import _core
 
@@ -70,3 +71,35 @@ def fuzzy_simplicial_set(knn_indices, knn_dists, n_neighbors: int | None = None,
     if return_sigmas_rhos:
         return G, sigmas, rhos
     return G
+
+
+class IVFKNNTransformer:
+    """sklearn-style transformer returning the kNN distance graph.
+
+    Output format matches ``pynndescent.PyNNDescentTransformer``: a CSR matrix
+    with ``n_neighbors + 1`` stored entries per row (the cell itself at
+    distance 0 first, then its neighbours by increasing distance).
+    """
+
+    def __init__(self, n_neighbors=15, metric="euclidean", random_state=0, n_jobs=None, **kwargs):
+        self.n_neighbors = n_neighbors
+        self.metric = metric
+        self.random_state = random_state
+        self.n_jobs = n_jobs
+
+    def get_params(self, deep=True):
+        return {"n_neighbors": self.n_neighbors, "metric": self.metric,
+                "random_state": self.random_state, "n_jobs": self.n_jobs}
+
+    def fit(self, X, y=None):
+        return self
+
+    def fit_transform(self, X, y=None):
+        X = np.asarray(X.toarray() if sp.issparse(X) else X, dtype=np.float32)
+        rs = self.random_state if isinstance(self.random_state, (int, np.integer)) else 0
+        k = min(self.n_neighbors + 1, X.shape[0])
+        idx, dist = knn(X, k, random_state=int(rs))
+        n = X.shape[0]
+        D = sp.csr_matrix((dist.ravel(), idx.ravel(), np.arange(0, n * k + 1, k)), shape=(n, n))
+        D.has_sorted_indices = False
+        return D

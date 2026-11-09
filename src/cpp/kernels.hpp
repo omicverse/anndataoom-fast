@@ -22,6 +22,8 @@ struct QcResult {
     std::vector<double> total;               // per cell, float32-rounded sum
     std::vector<int64_t> nnz;                // stored entries per cell
     std::vector<double> mt, ribo, hb;        // f64(f32 group sum) / f64(f32 total)
+    std::vector<float> mt_sum, ribo_sum, hb_sum;  // f32-rounded group sums
+    std::vector<int64_t> nnz_pos;            // entries > 0 per cell
     std::vector<uint8_t> keep;               // 1 if every rule passes
     std::vector<double> g_stored, g_nonzero, g_sum, g_sumsq;  // per gene, kept cells
 };
@@ -51,6 +53,9 @@ struct StatsParams {
     double theta = 100.0;
     double clip = 0.0;            // residual clip (|r| <= clip); <= 0 disables
     double sum_total = 0.0;       // sum of sums_genes
+    // mu = f64(f32(cells * genes)) / total, as omicverse's in-memory kernel
+    // rounds the product (anndataoom's chunked path does not).
+    bool mu_f32_product = false;
     // Optional per-row overrides (size n_rows, or empty):
     std::vector<double> cells_override;  // per-cell totals used for the Pearson mu
     std::vector<float> recip_override;   // per-cell float32 reciprocal size factor
@@ -73,7 +78,8 @@ StatsResult stats_pass(const CSRSource& src, const std::vector<uint8_t>& row_kee
 // distinct per-cell count totals: sum_u m_u r0(s_u, g) and sum_u m_u r0^2.
 void pearson_zero_terms(const std::vector<double>& s_unique, const std::vector<double>& mult,
                         const std::vector<double>& sums_genes, double sum_total, double theta,
-                        double clip, std::vector<double>& z1, std::vector<double>& z2);
+                        double clip, std::vector<double>& z1, std::vector<double>& z2,
+                        bool mu_f32_product = false);
 
 // ---- per-group statistics of the (normalised, log1p) matrix ---------------
 // For every group c and kept gene m: sum, sum of squares and stored-entry
@@ -85,6 +91,14 @@ struct GroupPassResult {
 GroupPassResult group_pass(const CSRSource& src, const std::vector<int32_t>& group, int64_t n_groups,
                            const std::vector<int32_t>& col_map, const std::vector<float>& recip,
                            bool log1p);
+
+// ---- dense z-score of a (normalised) CSR matrix ------------------------------
+// out[i, m] = clip((x_im - mean[m]) / std[m], +-clip) for every kept row i (in
+// order) and kept column m (zeros included), written as a dense row-major
+// float64 matrix of n_kept_rows x K.  clip <= 0 disables clipping.
+void scale_dense(const CSRSource& src, const std::vector<uint8_t>& row_keep,
+                 const std::vector<int32_t>& col_map, const std::vector<double>& mean,
+                 const std::vector<double>& std, double clip, double* out);
 
 // ---- pass 4: extract the scaled HVG matrix --------------------------------
 struct ScaledCSR {

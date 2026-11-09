@@ -59,6 +59,8 @@ public:
     Dataset(std::string path, DType dtype, int64_t n_elems, int64_t chunk_elems,
             std::vector<int64_t> chunk_addr, std::vector<int64_t> chunk_nbytes,
             std::vector<uint32_t> chunk_mask, std::vector<int> filters);
+    // In-memory array (e.g. a numpy buffer); the caller keeps it alive.
+    Dataset(const void* data, DType dtype, int64_t n_elems);
     ~Dataset();
     Dataset(const Dataset&) = delete;
     Dataset& operator=(const Dataset&) = delete;
@@ -66,6 +68,7 @@ public:
     DType dtype() const { return dtype_; }
     int64_t size() const { return n_elems_; }
     bool chunked() const { return chunked_; }
+    bool in_memory() const { return mem_ != nullptr; }
 
     // Read elements [e0, e1) converted to T.  Thread-safe given a private
     // scratch.
@@ -88,6 +91,7 @@ private:
     std::vector<int64_t> chunk_addr_, chunk_nbytes_;
     std::vector<uint32_t> chunk_mask_;
     std::vector<int> filters_;
+    const unsigned char* mem_ = nullptr;
 };
 
 }  // namespace aof

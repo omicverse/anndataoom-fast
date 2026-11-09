@@ -13,7 +13,7 @@ from . import _core
 from ._config import disable, enable, enabled
 from ._h5 import Unsupported, open_csr
 from ._ops import STATS, PATCHED
-from ._neighbors import knn, fuzzy_simplicial_set
+from ._neighbors import knn, fuzzy_simplicial_set, IVFKNNTransformer
 from ._umap import umap
 from ._markers import cosg, group_stats
 
@@ -74,4 +74,4 @@ except ImportError:  # the _leiden extension is optional while it is being built
 
 __all__ = ["install", "uninstall", "set_num_threads", "get_num_threads", "enable", "disable",
            "enabled", "open_csr", "Unsupported", "STATS", "knn", "fuzzy_simplicial_set", "umap",
-           "cosg", "group_stats", "leiden", "leiden_multi", "__version__"]
+           "cosg", "group_stats", "IVFKNNTransformer", "leiden", "leiden_multi", "__version__"]

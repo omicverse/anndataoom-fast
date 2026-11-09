@@ -47,7 +47,13 @@ def _recall(key):
 
 def _fallback(name, *args, **kwargs):
     STATS["fallback"] += 1
-    return _ORIG[name](*args, **kwargs)
+    fn = _ORIG.get(name)
+    if fn is None:  # not installed as a patch: call anndataoom's implementation
+        from anndataoom import _chunked_ops
+        fn = getattr(_chunked_ops, name)
+        if getattr(fn, "__module__", "").startswith("anndataoom_fast"):
+            raise RuntimeError(f"no original implementation recorded for {name}")
+    return fn(*args, **kwargs)
 
 
 def _view(adata, arr=None):

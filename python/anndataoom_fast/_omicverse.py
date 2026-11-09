@@ -22,37 +22,7 @@ _ORIG: dict = {}
 # ---------------------------------------------------------------------------
 # kNN transformer
 # ---------------------------------------------------------------------------
-class IVFKNNTransformer:
-    """sklearn-style transformer returning the kNN distance graph.
-
-    Output format matches ``pynndescent.PyNNDescentTransformer``: a CSR matrix
-    with ``n_neighbors + 1`` stored entries per row (the cell itself at
-    distance 0 first, then its neighbours by increasing distance).
-    """
-
-    def __init__(self, n_neighbors=15, metric="euclidean", random_state=0, n_jobs=None, **kwargs):
-        self.n_neighbors = n_neighbors
-        self.metric = metric
-        self.random_state = random_state
-        self.n_jobs = n_jobs
-
-    def get_params(self, deep=True):
-        return {"n_neighbors": self.n_neighbors, "metric": self.metric,
-                "random_state": self.random_state, "n_jobs": self.n_jobs}
-
-    def fit(self, X, y=None):
-        return self
-
-    def fit_transform(self, X, y=None):
-        from ._neighbors import knn
-        X = np.asarray(X.toarray() if sp.issparse(X) else X, dtype=np.float32)
-        rs = self.random_state if isinstance(self.random_state, (int, np.integer)) else 0
-        k = min(self.n_neighbors + 1, X.shape[0])
-        idx, dist = knn(X, k, random_state=int(rs))
-        n = X.shape[0]
-        D = sp.csr_matrix((dist.ravel(), idx.ravel(), np.arange(0, n * k + 1, k)), shape=(n, n))
-        D.has_sorted_indices = False
-        return D
+from ._neighbors import IVFKNNTransformer  # noqa: E402
 
 
 def _patched_handle_transformer(self, method, transformer, *, knn, kwds):
@@ -139,12 +109,15 @@ def _group_stats_any(X, labels):
     return out
 
 
-def _patched_cosg(adata, groupby="CellTypes", groups="all", mu=1, remove_lowly_expressed=False,
+def ov_cosg(adata, groupby="CellTypes", groups="all", mu=1, remove_lowly_expressed=False,
                   expressed_pct=0.1, n_genes_user=50, key_added=None,
                   calculate_logfoldchanges=True, use_raw=True, layer=None, reference="rest",
                   copy=False):
     import pandas as pd
     if groups != "all" or reference != "rest":
+        if "cosg" not in _ORIG:
+            from omicverse.single._cosg import cosg as _c
+            _ORIG["cosg"] = _c
         return _ORIG["cosg"](adata, groupby=groupby, groups=groups, mu=mu,
                              remove_lowly_expressed=remove_lowly_expressed,
                              expressed_pct=expressed_pct, n_genes_user=n_genes_user,
@@ -221,7 +194,7 @@ def _patched_cosg(adata, groupby="CellTypes", groups="all", mu=1, remove_lowly_e
     return adata if copy else None
 
 
-def _patched_cosg_add_pts(adata, key_added, groupby, *, use_raw=True, layer=None):
+def ov_cosg_add_pts(adata, key_added, groupby, *, use_raw=True, layer=None):
     import pandas as pd
     result = adata.uns[key_added]
     names = result.get("names")
@@ -259,9 +232,9 @@ def install() -> None:
     cls._handle_transformer = _patched_handle_transformer
     conn_mod.umap = _patched_connectivity_umap
     umap_mod.simplicial_set_embedding = _patched_simplicial_set_embedding
-    cosg_mod.cosg = _patched_cosg
+    cosg_mod.cosg = ov_cosg
     if _ORIG["cosg_add_pts"] is not None:
-        markers_mod._cosg_add_pts = _patched_cosg_add_pts
+        markers_mod._cosg_add_pts = ov_cosg_add_pts
     try:
         from . import _leiden_omicverse
         _leiden_omicverse.install()

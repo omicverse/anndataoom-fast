@@ -59,6 +59,10 @@ QcResult qc_pass(const CSRSource& src, const std::vector<uint8_t>& gene_group,
     r.mt.assign(n, 0.0);
     r.ribo.assign(n, 0.0);
     r.hb.assign(n, 0.0);
+    r.mt_sum.assign(n, 0.f);
+    r.ribo_sum.assign(n, 0.f);
+    r.hb_sum.assign(n, 0.f);
+    r.nnz_pos.assign(n, 0);
     r.keep.assign(n, 0);
     OrderedGeneSums acc(4, G, default_slots());
 
@@ -72,7 +76,7 @@ QcResult qc_pass(const CSRSource& src, const std::vector<uint8_t>& gene_group,
             for (int64_t row = b.row0; row < b.row1; ++row) {
                 if (!all_rows && !row_keep[row]) continue;
                 double tot = 0, mt = 0, ribo = 0, hb = 0;
-                int64_t nnz = 0;
+                int64_t nnz = 0, pos = 0;
                 const int64_t e0 = b.begin(row), e1 = b.end(row);
                 for (int64_t e = e0; e < e1; ++e) {
                     const int32_t c = b.col[e];
@@ -82,6 +86,7 @@ QcResult qc_pass(const CSRSource& src, const std::vector<uint8_t>& gene_group,
                     const double v = (double)b.val[e];
                     tot += v;
                     ++nnz;
+                    pos += v > 0.0;
                     if (grp & 1) mt += v;
                     if (grp & 2) ribo += v;
                     if (grp & 4) hb += v;
@@ -96,6 +101,10 @@ QcResult qc_pass(const CSRSource& src, const std::vector<uint8_t>& gene_group,
                 r.mt[row] = f_mt;
                 r.ribo[row] = f_ribo;
                 r.hb[row] = f_hb;
+                r.mt_sum[row] = (float)mt;
+                r.ribo_sum[row] = (float)ribo;
+                r.hb_sum[row] = (float)hb;
+                r.nnz_pos[row] = pos;
                 bool keep = true;
                 for (const QcRule& q : rules) {
                     double stat;
@@ -235,7 +244,9 @@ StatsResult stats_pass(const CSRSource& src, const std::vector<uint8_t>& row_kee
                         s2[m] += vd * vd;
                     }
                     if (p.do_pearson) {
-                        const double mu = cps * sums_genes[m] / p.sum_total;
+                        const double mu = p.mu_f32_product
+                            ? (double)((float)cps * (float)sums_genes[m]) / p.sum_total
+                            : cps * sums_genes[m] / p.sum_total;
                         double den = std::sqrt(mu + mu * mu / p.theta);
                         if (den == 0.0) den = 1.0;
                         const double rr = clip_to((x - mu) / den, p.clip);
@@ -260,7 +271,8 @@ StatsResult stats_pass(const CSRSource& src, const std::vector<uint8_t>& row_kee
 
 void pearson_zero_terms(const std::vector<double>& s_unique, const std::vector<double>& mult,
                         const std::vector<double>& sums_genes, double sum_total, double theta,
-                        double clip, std::vector<double>& z1, std::vector<double>& z2) {
+                        double clip, std::vector<double>& z1, std::vector<double>& z2,
+                        bool mu_f32_product) {
     check_len(mult.size(), (int64_t)s_unique.size(), "mult");
     const int64_t G = (int64_t)sums_genes.size(), U = (int64_t)s_unique.size();
     z1.assign(G, 0.0);
@@ -270,7 +282,8 @@ void pearson_zero_terms(const std::vector<double>& s_unique, const std::vector<d
         const double sg = sums_genes[g];
         double a1 = 0, a2 = 0;
         for (int64_t u = 0; u < U; ++u) {
-            const double mu = s_unique[u] * sg / sum_total;
+            const double mu = mu_f32_product ? (double)((float)s_unique[u] * (float)sg) / sum_total
+                                             : s_unique[u] * sg / sum_total;
             double den = std::sqrt(mu + mu * mu / theta);
             if (den == 0.0) den = 1.0;
             const double r0 = clip_to((0.0 - mu) / den, clip);
@@ -328,6 +341,38 @@ GroupPassResult group_pass(const CSRSource& src, const std::vector<int32_t>& gro
     r.sumsq = acc.take(1);
     r.nnz = acc.take(2);
     return r;
+}
+
+// ---------------------------------------------------------------------------
+void scale_dense(const CSRSource& src, const std::vector<uint8_t>& row_keep,
+                 const std::vector<int32_t>& col_map, const std::vector<double>& mean,
+                 const std::vector<double>& sd, double clip, double* out) {
+    check_len(row_keep.size(), src.n_rows, "row_keep");
+    check_len(col_map.size(), src.n_cols, "col_map");
+    const int64_t K = (int64_t)mean.size();
+    check_len(sd.size(), K, "std");
+    std::vector<int64_t> out_row(src.n_rows, -1);
+    int64_t r = 0;
+    for (int64_t i = 0; i < src.n_rows; ++i)
+        if (row_keep[i]) out_row[i] = r++;
+    std::vector<double> z(K);
+    for (int64_t m = 0; m < K; ++m) z[m] = clip_to((0.0 - mean[m]) / sd[m], clip);
+    dispatch_values(src, [&](auto tag) {
+        using V = decltype(tag);
+        for_each_block<V>(src, nullptr, [&](int64_t, int, const Block<V>& b) {
+            for (int64_t row = b.row0; row < b.row1; ++row) {
+                if (!row_keep[row]) continue;
+                double* o = out + out_row[row] * K;
+                std::memcpy(o, z.data(), K * sizeof(double));  // first touch on this thread
+                for (int64_t e = b.begin(row); e < b.end(row); ++e) {
+                    const int32_t m = col_map[b.col[e]];
+                    if (m < 0) continue;
+                    o[m] = clip_to(((double)b.val[e] - mean[m]) / sd[m], clip);
+                }
+            }
+        });
+        return 0;
+    });
 }
 
 // ---------------------------------------------------------------------------
