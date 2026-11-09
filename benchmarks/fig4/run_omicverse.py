@@ -52,7 +52,9 @@ if __name__ == "__main__":
     with timers("Nearest neighbors"):
         ov.pp.neighbors(adata, n_neighbors=15, use_rep="scaled|original|X_pca")
     with timers("Clustering"):
-        ov.pp.leiden(adata, resolution=[0.25, 0.5, 1.0, 1.5, 2.0], key_added="leiden")
+        # n_iterations=2: scanpy's announced default; brisc runs one Leiden iteration.
+        ov.pp.leiden(adata, resolution=[0.25, 0.5, 1.0, 1.5, 2.0], key_added="leiden",
+                     n_iterations=2)
     with timers("Embedding"):
         ov.pp.umap(adata)
     with timers("Find markers"):
