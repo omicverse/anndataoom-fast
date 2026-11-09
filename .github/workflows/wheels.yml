@@ -55,9 +55,10 @@ jobs:
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux2014
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux2014
           CIBW_TEST_REQUIRES: "pytest scikit-learn"
-          # Applies to every pip install in the container, including the
-          # wheel's own dependencies (installed before test-requires).
-          CIBW_ENVIRONMENT_LINUX: PIP_CONSTRAINT=/project/.github/constraints-manylinux2014.txt
+          # Every pip install in the container (including the wheel's own
+          # dependencies, installed before test-requires) takes the newest
+          # release that has a glibc 2.17 wheel, as users on such systems get.
+          CIBW_ENVIRONMENT_LINUX: PIP_ONLY_BINARY=:all:
           CIBW_TEST_SKIP: "cp314-*"
       - uses: actions/upload-artifact@v4
         with:
