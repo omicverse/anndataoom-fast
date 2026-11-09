@@ -102,17 +102,30 @@ public:
     }
 
     // igraph_i_rng_get_uint64_bounded; 64 random bits = (get() << 32) + get()
+    // Full 64x64 -> 128-bit product as (hi, lo); MSVC has no __uint128_t.
+    static void mul128(uint64_t a, uint64_t b, uint64_t& hi, uint64_t& lo) {
+#if defined(__SIZEOF_INT128__)
+        __uint128_t m = __uint128_t(a) * __uint128_t(b);
+        hi = uint64_t(m >> 64);
+        lo = uint64_t(m);
+#else
+        uint64_t a0 = a & 0xffffffffu, a1 = a >> 32, b0 = b & 0xffffffffu, b1 = b >> 32;
+        uint64_t p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+        uint64_t mid = (p00 >> 32) + (p01 & 0xffffffffu) + (p10 & 0xffffffffu);
+        lo = (mid << 32) | (p00 & 0xffffffffu);
+        hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+#endif
+    }
+
     uint64_t bounded64(uint64_t range) {
-        uint64_t x, l, t = (-range) % range;
-        __uint128_t mm;
+        uint64_t x, l, h, t = (-range) % range;
         do {
             uint64_t hi = get();
             uint64_t lo = get();
             x = (hi << 32) + lo;
-            mm = __uint128_t(x) * __uint128_t(range);
-            l = uint64_t(mm);
+            mul128(x, range, h, l);
         } while (l < t);
-        return uint64_t(mm >> 64);
+        return h;
     }
 
     // igraph_rng_get_integer(rng, l, h) for 0 <= l <= h
