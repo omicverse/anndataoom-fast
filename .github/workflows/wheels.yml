@@ -54,7 +54,10 @@ jobs:
         env:
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux2014
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux2014
-          CIBW_TEST_REQUIRES: "pytest scikit-learn h5py<3.15"
+          CIBW_TEST_REQUIRES: "pytest scikit-learn"
+          # Applies to every pip install in the container, including the
+          # wheel's own dependencies (installed before test-requires).
+          CIBW_ENVIRONMENT_LINUX: PIP_CONSTRAINT=/project/.github/constraints-manylinux2014.txt
           CIBW_TEST_SKIP: "cp314-*"
       - uses: actions/upload-artifact@v4
         with:
