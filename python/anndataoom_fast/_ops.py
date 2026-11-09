@@ -102,7 +102,27 @@ def _qc_cached(v, adata=None, extra_mask=None):
     _remember(key, out)
     # Per-gene counts over these rows/columns do not depend on gene groups.
     _remember(("genes",) + v.key(), out)
+    # Nor on the column selection: keep them in original column space, so a
+    # view of the same rows with fewer columns (after gene filtering) reuses
+    # this pass.
+    _remember(_genes_rows_key(v), {k: res[k] for k in res if k.startswith("g_")})
     return out, masks
+
+
+def _genes_rows_key(v):
+    path, key, rows_digest, _ = v.key()
+    return ("genes_rows", path, key, rows_digest)
+
+
+def _gene_counts(v):
+    """Per-gene QC counts for view `v`, from any cached pass over the same rows."""
+    res = _recall(("genes",) + v.key())
+    if res is not None:
+        return res
+    raw = _recall(_genes_rows_key(v))
+    if raw is not None:
+        return {k: v.from_orig_cols(a) for k, a in raw.items()}
+    return _qc_cached(v)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -147,9 +167,7 @@ def chunked_identify_robust_genes(adata, percent_cells=0.05, chunk_size=None, **
         return _fallback("chunked_identify_robust_genes", adata, percent_cells=percent_cells,
                          **({} if chunk_size is None else {"chunk_size": chunk_size}), **kw)
     STATS["fast"] += 1
-    res = _recall(("genes",) + v.key())
-    if res is None:
-        res, _ = _qc_cached(v)
+    res = _gene_counts(v)
     n_cells = res["g_nonzero"].astype(np.int64)
     adata.var["n_cells"] = n_cells
     nonzero_mask = n_cells > 0
