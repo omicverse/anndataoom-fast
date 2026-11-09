@@ -17,21 +17,20 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      # conda-forge's libomp targets macOS 11 (arm64) / 10.13 (x86_64), unlike
+      # conda-forge's libomp targets macOS 11 (both arches), unlike
       # Homebrew's, which targets the runner's macOS and would make the wheels
       # installable on the newest macOS only.
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: actions/setup-python@v5
         if: runner.os == 'macOS'
         with:
-          environment-name: omp
-          create-args: llvm-openmp
-          init-shell: none
+          python-version: "3.12"
       - name: libomp (macOS)
         if: runner.os == 'macOS'
         run: |
-          echo "OpenMP_ROOT=$MAMBA_ROOT_PREFIX/envs/omp" >> "$GITHUB_ENV"
-          if [ "$(uname -m)" = "arm64" ]; then T=11.0; else T=10.15; fi
-          echo "MACOSX_DEPLOYMENT_TARGET=$T" >> "$GITHUB_ENV"
+          python -m pip install zstandard
+          python .github/scripts/fetch_libomp.py "$RUNNER_TEMP/omp"
+          echo "OpenMP_ROOT=$RUNNER_TEMP/omp" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
       - uses: pypa/cibuildwheel@v3.2
       - uses: actions/upload-artifact@v4
         with:
