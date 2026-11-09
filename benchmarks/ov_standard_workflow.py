@@ -1,6 +1,6 @@
 """omicverse standard single-cell workflow on an out-of-core AnnData, timed per step.
 
-    python ov_standard_workflow.py INPUT.h5ad OUT_PREFIX --impl {orig,fast} [--threads N]
+    python ov_standard_workflow.py INPUT.h5ad OUT_PREFIX --backend {python,cpp} [--threads N]
 
 Steps (Fig. 4 rows of the brisc paper, omicverse's own algorithms):
   Load data       anndataoom.read
@@ -12,13 +12,15 @@ Steps (Fig. 4 rows of the brisc paper, omicverse's own algorithms):
   Clustering      ov.pp.leiden at resolutions 0.25, 0.5, 1, 1.5, 2
   Embedding       ov.pp.umap
   Find markers    ov.single.find_markers(groupby='cell_type', method='cosg')
-Per-step wall time and peak RSS are written to OUT_PREFIX.json, outputs to OUT_PREFIX.npz.
+Per-step wall time and peak RSS (sampled every 50 ms, as in the brisc
+benchmarks) are written to OUT_PREFIX.json, outputs to OUT_PREFIX.npz.
 """
 import argparse
 import json
 import os
 import resource
 import sys
+import threading
 import time
 
 import numpy as np
@@ -30,32 +32,63 @@ def rss_gb():
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 ** 2
 
 
+class RssSampler:
+    """Peak resident set size between reset() calls, sampled every 50 ms."""
+
+    def __init__(self, interval=0.05):
+        self.interval = interval
+        self.page = os.sysconf("SC_PAGE_SIZE")
+        self.peak = 0
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t.start()
+
+    def current(self):
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * self.page
+
+    def _run(self):
+        while not self._stop.is_set():
+            self.peak = max(self.peak, self.current())
+            time.sleep(self.interval)
+
+    def reset(self):
+        self.peak = self.current()
+
+    def stop(self):
+        self._stop.set()
+        self._t.join()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
     ap.add_argument("out")
-    ap.add_argument("--impl", choices=["orig", "fast"], required=True)
+    ap.add_argument("--backend", choices=["python", "cpp"], required=True)
     ap.add_argument("--threads", type=int, default=0)
     ap.add_argument("--groupby", default="cell_type")
     a = ap.parse_args()
 
-    if a.impl == "fast":
-        import anndataoom_fast
-        anndataoom_fast.install(omicverse=True)
-        if a.threads:
-            anndataoom_fast.set_num_threads(a.threads)
     import anndataoom as oom
     import omicverse as ov
     import omicverse.single  # noqa: F401
     ov.settings.cpu_init()
+    ov.settings.backend = a.backend
+    if a.backend == "cpp" and a.threads:
+        import anndataoom_fast
+        anndataoom_fast.set_num_threads(a.threads)
 
     steps = {}
+    sampler = RssSampler()
 
     def step(name, fn):
+        sampler.reset()
         t = time.perf_counter()
         r = fn()
-        steps[name] = {"seconds": time.perf_counter() - t, "peak_rss_gb": rss_gb()}
-        print(f"[{a.impl}] {name}: {steps[name]['seconds']:.2f}s", file=sys.stderr, flush=True)
+        sec = time.perf_counter() - t
+        peak = max(sampler.peak, sampler.current())
+        steps[name] = {"seconds": sec, "step_peak_rss_gb": peak / 1024 ** 3, "peak_rss_gb": rss_gb()}
+        print(f"[{a.backend}] {name}: {steps[name]['seconds']:.2f}s", file=sys.stderr, flush=True)
         return r
 
     adata = step("Load data", lambda: oom.read(a.input))
@@ -70,10 +103,7 @@ def main():
     step("Nearest neighbors",
          lambda: ov.pp.neighbors(adata, n_neighbors=15, use_rep="scaled|original|X_pca"))
 
-    def cluster():
-        for r in RESOLUTIONS:
-            ov.pp.leiden(adata, resolution=r, key_added=f"leiden_{r}")
-    step("Clustering", cluster)
+    step("Clustering", lambda: ov.pp.leiden(adata, resolution=RESOLUTIONS, key_added="leiden"))
     step("Embedding", lambda: ov.pp.umap(adata))
     step("Find markers",
          lambda: ov.single.find_markers(adata, groupby=a.groupby, method="cosg", n_genes=50))
@@ -85,10 +115,11 @@ def main():
     conn = adata.obsp["connectivities"]
     out["conn_indptr"], out["conn_indices"], out["conn_data"] = conn.indptr, conn.indices, conn.data
     np.savez(a.out + ".npz", **out)
-    meta = {"impl": a.impl, "input": os.path.abspath(a.input), "steps": steps,
+    sampler.stop()
+    meta = {"backend": a.backend, "input": os.path.abspath(a.input), "steps": steps,
             "total_seconds": sum(v["seconds"] for v in steps.values()),
             "n_obs": int(adata.n_obs), "n_vars": int(adata.n_vars)}
-    if a.impl == "fast":
+    if a.backend == "cpp":
         import anndataoom_fast
         meta["threads"] = anndataoom_fast.get_num_threads()
     with open(a.out + ".json", "w") as f:
