@@ -3,6 +3,10 @@ Copyright (c) 2026 omicverse contributors.
 
 Portions are ported from leidenalg/libleidenalg (V.A. Traag, GPL-3.0) and igraph (GPL-2.0-or-later).
 third_party/libdeflate is MIT-licensed by Eric Biggers (see third_party/libdeflate/COPYING).
+src/cpp/leiden_brisc is ported from brisc (Copyright (c) 2026 Michael Wainberg and Keon Arbabi,
+MIT License; the full notice is in src/cpp/leiden_brisc/leiden_brisc.cpp).
+src/cpp/embed (PaCMAP / LocalMAP) is ported from brisc (Copyright (c) 2026 Michael Wainberg
+and Keon Arbabi, MIT License; the full notice is in src/cpp/embed/embed.cpp).
 
 --------------------------------------------------------------------------
 

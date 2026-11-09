@@ -97,3 +97,24 @@ def test_group_stats_and_cosg_against_dense():
     for ci, g in enumerate(groups):
         np.testing.assert_allclose(out["scores"][g], np.sort(lam[:, ci])[::-1][:20].astype(np.float32),
                                    rtol=1e-6)
+
+
+def test_umap_parallel_sgd_deterministic_and_close_to_sequential():
+    from sklearn.neighbors import NearestNeighbors
+    X, lab = _blobs(4000)
+    idx, dist = knn(X, 15)
+    G = fuzzy_simplicial_set(idx, dist, 15).tocsr()
+    runs = []
+    for nt in (1, 3, 8):
+        aof.set_num_threads(nt)
+        runs.append(aof.umap(G, n_epochs=100, init="random", sgd="parallel"))
+    assert all(np.array_equal(runs[0], r) for r in runs[1:])
+    assert not np.array_equal(runs[0], aof.umap(G, n_epochs=100, init="random", sgd="parallel",
+                                                random_state=1))
+    seq = aof.umap(G, n_epochs=100, init="random", sgd="sequential")
+
+    def preservation(E):
+        _, I = NearestNeighbors(n_neighbors=16).fit(E).kneighbors(E)
+        return np.mean([len(set(a[1:]) & set(b[1:])) / 15 for a, b in zip(I, idx)])
+
+    assert preservation(runs[0]) > 0.95 * preservation(seq)

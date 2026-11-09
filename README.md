@@ -43,9 +43,11 @@ aof.set_num_threads(16)
 
 idx, dist = aof.knn(X_pca, 15)                      # IVF kNN, self first
 G = aof.fuzzy_simplicial_set(idx, dist, 15)         # = umap-learn
-emb = aof.umap(G)                                   # UMAP SGD layout
+emb = aof.umap(G)                                   # UMAP layout, all threads, deterministic
 labels = aof.leiden(G, resolution=1.0, random_state=0)   # = leidenalg
 labels = aof.leiden_multi(G, [0.25, 0.5, 1.0], random_state=0)
+labels = aof.leiden_brisc(G, resolution=1.0, random_state=0)   # = brisc SingleCell.cluster
+emb = aof.localmap(X_pca)                           # = brisc SingleCell.localmap (also aof.pacmap)
 
 from anndataoom_fast import memory                  # in-memory CSR kernels
 qc = memory.qc_metrics(adata.X, mt=adata.var_names.str.startswith("MT-"))
@@ -61,7 +63,10 @@ through the C++ engine in place.
 | QC, normalize_total, HVG (pearson), scale | omicverse, identical / ≤1e-13 relative |
 | PCA (in memory, covariance_eigh) | sklearn, same components up to sign |
 | fuzzy simplicial set | umap-learn, bit-identical |
-| Leiden (RBConfiguration) | leidenalg, identical partitions |
+| UMAP layout (`sgd='parallel'`, default) | same objective, edge schedule and negative sampling as umap-learn; same embedding for any thread count; `sgd='sequential'` = umap-learn's algorithm |
+| Leiden (`leiden`, RBConfiguration) | leidenalg, identical partitions |
+| Leiden, brisc flavour (`leiden_brisc`) | brisc, identical labels |
+| PaCMAP / LocalMAP (`pacmap`, `localmap`) | brisc, bit-identical embeddings given the same kNN (LocalMAP: on x86) |
 | COSG markers | omicverse, identical top-n lists |
 | kNN | approximate (IVF), recall > 0.99; `exact=True` for brute force |
 
@@ -69,4 +74,18 @@ through the C++ engine in place.
 
 GPL-3.0-or-later. Leiden is ported from leidenalg/libleidenalg (GPL-3.0) and
 igraph (GPL-2.0-or-later); the UMAP graph/layout follow umap-learn (BSD-3);
-`third_party/libdeflate` is MIT.
+`third_party/libdeflate` is MIT. `leiden_brisc` is ported from
+[brisc](https://github.com/briscverse/brisc) (MIT, Copyright (c) 2026 Michael
+Wainberg and Keon Arbabi), as are `pacmap` / `localmap`.
+
+## Parallel UMAP
+
+umap-learn optimises the layout sequentially (or with Hogwild!, which is not
+reproducible).  `sgd='parallel'` keeps umap's update rule — each sampled edge
+pulls its head and its tail together, followed by negative samples — and
+parallelises it deterministically: vertices are visited in fixed blocks in
+umap's own (head-sorted) edge order, each head is updated by one thread from
+live coordinates, the tail moves are recorded and applied after the block in
+edge order, and negative samples come from a hash of (seed, edge, epoch).  On
+SEA-AD (1.38M cells) it matches the sequential layout's kNN preservation
+(0.0233 vs 0.0230) and gives identical embeddings for any number of threads.

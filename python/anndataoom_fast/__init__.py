@@ -68,10 +68,15 @@ def uninstall() -> None:
 
 
 try:
-    from ._leiden import leiden, leiden_multi
+    from ._leiden import leiden, leiden_multi, leiden_brisc, leiden_brisc_multi
 except ImportError:  # the _leiden extension is optional while it is being built
     pass
 
 __all__ = ["install", "uninstall", "set_num_threads", "get_num_threads", "enable", "disable",
            "enabled", "open_csr", "Unsupported", "STATS", "knn", "fuzzy_simplicial_set", "umap",
-           "cosg", "group_stats", "IVFKNNTransformer", "leiden", "leiden_multi", "__version__"]
+           "cosg", "group_stats", "IVFKNNTransformer", "leiden", "leiden_multi", "leiden_brisc",
+           "leiden_brisc_multi", "__version__"]
+
+from ._embed import pacmap, localmap  # brisc PaCMAP / LocalMAP port
+
+__all__ += ["pacmap", "localmap"]

@@ -73,3 +73,28 @@ if(AOF_NATIVE AND NOT MSVC)
   target_compile_options(_leiden_cpp PRIVATE -march=native)
 endif()
 install(TARGETS _leiden_cpp LIBRARY DESTINATION anndataoom_fast)
+
+# Port of brisc's Leiden (MIT, Wainberg & Arbabi) -- separate module.
+nanobind_add_module(_leiden_brisc_cpp NB_STATIC
+  src/cpp/leiden_brisc/bindings_leiden_brisc.cpp
+  src/cpp/leiden_brisc/leiden_brisc.cpp)
+target_link_libraries(_leiden_brisc_cpp PRIVATE aof_openmp)
+# Bit-exact floating point vs brisc: no -ffast-math, no fma contraction.
+target_compile_options(_leiden_brisc_cpp PRIVATE ${AOF_FP_FLAGS})
+if(AOF_NATIVE AND NOT MSVC)
+  target_compile_options(_leiden_brisc_cpp PRIVATE -march=native)
+endif()
+install(TARGETS _leiden_brisc_cpp LIBRARY DESTINATION anndataoom_fast)
+
+# Port of brisc's PaCMAP / LocalMAP (MIT, Wainberg & Arbabi) -- separate module.
+nanobind_add_module(_embed_cpp NB_STATIC
+  src/cpp/embed/bindings_embed.cpp
+  src/cpp/embed/embed.cpp)
+target_link_libraries(_embed_cpp PRIVATE aof_openmp)
+# Bit-exact floating point vs brisc: the fused multiply-adds brisc's -Ofast
+# build performs are written out explicitly, so no fast-math / contraction.
+target_compile_options(_embed_cpp PRIVATE ${AOF_FP_FLAGS})
+if(AOF_NATIVE AND NOT MSVC)
+  target_compile_options(_embed_cpp PRIVATE -march=native)
+endif()
+install(TARGETS _embed_cpp LIBRARY DESTINATION anndataoom_fast)

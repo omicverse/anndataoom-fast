@@ -311,6 +311,27 @@ NB_MODULE(_core, m) {
        "gamma"_a, "initial_alpha"_a, "negative_sample_rate"_a, "n_epochs"_a, "move_other"_a = true,
        "parallel"_a = false);
 
+    m.def("umap_optimize_euclidean_det", [](nb::ndarray<float, nb::ndim<2>, nb::c_contig, nb::device::cpu> emb,
+                                            In1<int64_t> indptr, In1<int32_t> tail, In1<double> eps,
+                                            uint64_t seed, double a, double b, double gamma,
+                                            double initial_alpha, double negative_sample_rate,
+                                            int n_epochs, bool move_other, int64_t block) {
+        const int64_t n = emb.shape(0);
+        if ((int64_t)indptr.shape(0) != n + 1) throw std::invalid_argument("indptr must have n+1 entries");
+        const int64_t E = indptr.data()[n];
+        if ((int64_t)tail.shape(0) != E || (int64_t)eps.shape(0) != E)
+            throw std::invalid_argument("tail/epochs_per_sample length mismatch");
+        UmapSgdParams p;
+        p.a = a; p.b = b; p.gamma = gamma; p.initial_alpha = initial_alpha;
+        p.negative_sample_rate = negative_sample_rate; p.n_epochs = n_epochs;
+        p.move_other = move_other;
+        nb::gil_scoped_release g;
+        umap_optimize_euclidean_det(emb.data(), n, (int)emb.shape(1), indptr.data(), tail.data(),
+                                    eps.data(), seed, p, block);
+    }, "embedding"_a, "indptr"_a, "tail"_a, "epochs_per_sample"_a, "seed"_a, "a"_a, "b"_a,
+       "gamma"_a, "initial_alpha"_a, "negative_sample_rate"_a, "n_epochs"_a, "move_other"_a = true,
+       "block"_a = 0);
+
     m.def("csr_matvec", [](In1<int64_t> indptr, In1<int32_t> indices, In1<double> data, In1<double> x) {
         const int64_t n = indptr.shape(0) - 1;
         std::vector<double> y(n);

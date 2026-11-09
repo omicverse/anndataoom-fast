@@ -3,7 +3,9 @@
 #include <omp.h>
 
 #include <cmath>
+#include <algorithm>
 #include <cstring>
+#include <stdexcept>
 #include <vector>
 
 namespace aof {
@@ -118,6 +120,115 @@ void umap_optimize_euclidean(float* emb, int64_t n, int dim, const int32_t* head
         } else {
             for (int64_t i = 0; i < E; ++i)
                 update_edge(i, ep, emb, dim, n, head, tail, eps, st, rng.data(), p, alpha);
+        }
+        alpha = p.initial_alpha * (1.0 - ((double)ep / (double)p.n_epochs));
+    }
+}
+
+namespace {
+
+inline uint64_t splitmix64(uint64_t& x) {
+    uint64_t z = (x += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+// One pow per term: d2^b = d2 * d2^(b-1).
+inline double attract_coeff(float d2, const UmapSgdParams& p) {
+    if (!(d2 > 0.f)) return 0.0;
+    const double t = std::pow((double)d2, p.b - 1.0);
+    return -2.0 * p.a * p.b * t / (p.a * t * (double)d2 + 1.0);
+}
+
+inline double repulse_coeff(float d2, const UmapSgdParams& p) {
+    return 2.0 * p.gamma * p.b / ((0.001 + (double)d2) * (p.a * std::pow((double)d2, p.b) + 1.0));
+}
+
+}  // namespace
+
+void umap_optimize_euclidean_det(float* emb, int64_t n, int dim, const int64_t* indptr,
+                                 const int32_t* tail, const double* eps, uint64_t seed,
+                                 const UmapSgdParams& p, int64_t block) {
+    if (dim > 64) throw std::invalid_argument("dim must be <= 64");
+    // Blocks must be small relative to n (a vertex rarely shares a block with
+    // its neighbours); the size depends on n only, never on the thread count.
+    if (block <= 0) block = std::min<int64_t>(4096, std::max<int64_t>(256, n / 64));
+    const int64_t E = indptr[n];
+    std::vector<double> next_sample(eps, eps + E), per_neg(E), next_neg(E);
+    for (int64_t e = 0; e < E; ++e) next_neg[e] = per_neg[e] = eps[e] / p.negative_sample_rate;
+    int64_t max_block_edges = 0;
+    for (int64_t b0 = 0; b0 < n; b0 += block)
+        max_block_edges = std::max(max_block_edges, indptr[std::min(n, b0 + block)] - indptr[b0]);
+    std::vector<float> out((size_t)block * dim);
+    std::vector<unsigned char> moved((size_t)block);
+    // Tail moves of the block's edges (umap's move_other), applied after the block.
+    std::vector<float> tail_delta((size_t)max_block_edges * dim);
+    std::vector<unsigned char> sampled((size_t)max_block_edges);
+    double alpha = p.initial_alpha;
+    for (int ep = 0; ep < p.n_epochs; ++ep) {
+        // Vertices are visited in fixed blocks, in index order -- umap's own
+        // edge order, since its edges are sorted by head.  Inside a block each
+        // head vertex is updated by one thread from the live coordinates; the
+        // moves umap applies to the tail of each edge are recorded and added
+        // after the block, in edge order.  No read races with a write, so the
+        // result is independent of the number of threads.
+        for (int64_t b0 = 0; b0 < n; b0 += block) {
+            const int64_t b1 = std::min<int64_t>(n, b0 + block);
+            const int64_t e0 = indptr[b0];
+#pragma omp parallel for schedule(dynamic, 64)
+            for (int64_t v = b0; v < b1; ++v) {
+                float cur[64];
+                const float* self = emb + v * dim;
+                for (int d = 0; d < dim; ++d) cur[d] = self[d];
+                bool mv = false;
+                for (int64_t e = indptr[v]; e < indptr[v + 1]; ++e) {
+                    if (!(next_sample[e] <= (double)ep)) {
+                        sampled[e - e0] = 0;
+                        continue;
+                    }
+                    mv = true;
+                    sampled[e - e0] = p.move_other;
+                    const float* oth = emb + (int64_t)tail[e] * dim;
+                    float* td = &tail_delta[(size_t)(e - e0) * dim];
+                    const double gc = attract_coeff(rdist(cur, oth, dim), p);
+                    for (int d = 0; d < dim; ++d) {
+                        const double g = clip4(gc * (double)(cur[d] - oth[d]));
+                        cur[d] = (float)((double)cur[d] + g * alpha);
+                        td[d] = (float)(-g * alpha);
+                    }
+                    next_sample[e] += eps[e];
+                    const int64_t n_neg = (int64_t)(((double)ep - next_neg[e]) / per_neg[e]);
+                    uint64_t st = seed ^ ((uint64_t)e * 0xD1B54A32D192ED03ULL) ^
+                                  ((uint64_t)ep * 0x8CB92BA72F3D8DD7ULL);
+                    for (int64_t q = 0; q < n_neg; ++q) {
+                        const uint64_t r = splitmix64(st);
+                        const int64_t k = (int64_t)(((r >> 32) * (uint64_t)n) >> 32);
+                        if (k == v) continue;
+                        const float* o2 = emb + k * dim;
+                        const float d2 = rdist(cur, o2, dim);
+                        if (!(d2 > 0.f)) continue;
+                        const double gr = repulse_coeff(d2, p);
+                        for (int d = 0; d < dim; ++d) {
+                            const double g = clip4(gr * (double)(cur[d] - o2[d]));
+                            cur[d] = (float)((double)cur[d] + g * alpha);
+                        }
+                    }
+                    next_neg[e] += (double)n_neg * per_neg[e];
+                }
+                moved[v - b0] = mv;
+                if (mv) for (int d = 0; d < dim; ++d) out[(v - b0) * dim + d] = cur[d];
+            }
+            for (int64_t v = b0; v < b1; ++v)
+                if (moved[v - b0])
+                    std::memcpy(emb + v * dim, &out[(v - b0) * dim], sizeof(float) * dim);
+            const int64_t e1 = indptr[b1];
+            for (int64_t e = e0; e < e1; ++e) {
+                if (!sampled[e - e0]) continue;
+                float* o = emb + (int64_t)tail[e] * dim;
+                const float* td = &tail_delta[(size_t)(e - e0) * dim];
+                for (int d = 0; d < dim; ++d) o[d] = (float)((double)o[d] + (double)td[d]);
+            }
         }
         alpha = p.initial_alpha * (1.0 - ((double)ep / (double)p.n_epochs));
     }

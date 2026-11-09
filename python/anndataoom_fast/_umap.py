@@ -1,8 +1,14 @@
 """UMAP embedding of a fuzzy graph, following umap-learn's simplicial_set_embedding.
 
-The SGD is a C++ port of umap-learn's optimize_layout_euclidean (same edge
-schedule, same Tausworthe RNG streams, same float32/float64 arithmetic; umap
-compiles it with numba fastmath, so the two agree to rounding).  The spectral
+``sgd='parallel'`` (default) runs the layout optimisation on all threads and
+is deterministic: each epoch updates every vertex from a snapshot of the
+previous epoch, one vertex per thread, with negative samples drawn from a
+hash of (seed, edge, epoch), so the embedding is the same for any number of
+threads.  ``sgd='sequential'`` is a C++ port of umap-learn's single-threaded
+optimize_layout_euclidean (same edge schedule, same Tausworthe RNG streams,
+same float32/float64 arithmetic; umap compiles it with numba fastmath, so the
+two agree to rounding); ``sgd='hogwild'`` is its lock-free parallel version
+(like umap-learn's parallel=True, not reproducible).  The spectral
 initialisation solves for the same eigenvectors (the 2nd and 3rd smallest of
 the normalised Laplacian) as the largest eigenvectors of D^-1/2 W D^-1/2,
 which Lanczos resolves far faster, with a thread-count independent matvec and
@@ -42,7 +48,9 @@ def _spectral_fast(graph: sp.coo_matrix, dim: int, tol: float = 1e-4):
 
     op = sla.LinearOperator(M.shape, matvec=mv, dtype=np.float64)
     k = dim + 1
-    with threadpool_limits(1):
+    # Single-threaded BLAS for ARPACK's dense steps (thread-count independent);
+    # the matvec itself runs on our OpenMP threads, so limit only BLAS.
+    with threadpool_limits(1, user_api="blas"):
         w, v = sla.eigsh(op, k, which="LA", ncv=max(2 * k + 1, 40), tol=tol, v0=sqrt_deg,
                          maxiter=n * 5)
     order = np.argsort(w)[::-1][1:k]  # skip the trivial eigenvalue 1
@@ -118,8 +126,11 @@ def simplicial_set_embedding(graph, n_components: int = 2, *, a: float, b: float
                              n_epochs: int | None = None, init="spectral", random_state=0,
                              gamma: float = 1.0, initial_alpha: float = 1.0,
                              negative_sample_rate: int = 5, spectral: str = "fast",
-                             parallel: bool = False, data=None):
+                             parallel: bool = False, data=None, sgd: str | None = None):
     """Drop-in for umap.umap_.simplicial_set_embedding (euclidean output, no densMAP).
+
+    ``sgd``: 'parallel' (deterministic, multithreaded; default), 'sequential'
+    (umap-learn's algorithm) or 'hogwild'; ``parallel=True`` means 'hogwild'.
 
     Returns the float32 embedding of shape (n, n_components).
     """
@@ -154,6 +165,21 @@ def simplicial_set_embedding(graph, n_components: int = 2, *, a: float, b: float
     rng_state = rs.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
 
     emb = (10.0 * (emb - np.min(emb, 0)) / (np.max(emb, 0) - np.min(emb, 0))).astype(np.float32, order="C")
+    if sgd is None:
+        sgd = "hogwild" if parallel else "parallel"
+    if sgd == "parallel":
+        g = graph.tocsr()  # rows of a summed COO are sorted; keep the same edge order
+        assert np.array_equal(g.indices, graph.col.astype(g.indices.dtype))
+        seed = int(np.uint64(np.int64(rng_state[0])) * np.uint64(0x9E3779B97F4A7C15)
+                   ^ np.uint64(np.int64(rng_state[1])) ^ (np.uint64(np.int64(rng_state[2])) << np.uint64(32)))
+        _core.umap_optimize_euclidean_det(emb, g.indptr.astype(np.int64), g.indices.astype(np.int32),
+                                          eps, seed, float(a), float(b), float(gamma),
+                                          float(initial_alpha), float(negative_sample_rate),
+                                          int(n_epochs), True)
+        return emb
+    if sgd not in ("sequential", "hogwild"):
+        raise ValueError(f"sgd must be 'parallel', 'sequential' or 'hogwild', not {sgd!r}")
+    parallel = sgd == "hogwild"
     _core.umap_optimize_euclidean(emb, graph.row.astype(np.int32), graph.col.astype(np.int32),
                                   eps, rng_state, float(a), float(b), float(gamma),
                                   float(initial_alpha), float(negative_sample_rate), int(n_epochs),
@@ -164,11 +190,11 @@ def simplicial_set_embedding(graph, n_components: int = 2, *, a: float, b: float
 def umap(connectivities, n_components: int = 2, *, min_dist: float = 0.5, spread: float = 1.0,
          n_epochs: int | None = None, random_state=0, a=None, b=None, gamma: float = 1.0,
          alpha: float = 1.0, negative_sample_rate: int = 5, init="spectral", spectral: str = "fast",
-         parallel: bool = False):
+         parallel: bool = False, sgd: str | None = None):
     """UMAP embedding from a connectivities matrix (scanpy / omicverse parameters)."""
     if a is None or b is None:
         a, b = find_ab_params(spread, min_dist)
     return simplicial_set_embedding(connectivities, n_components, a=a, b=b, n_epochs=n_epochs,
                                     init=init, random_state=random_state, gamma=gamma,
                                     initial_alpha=alpha, negative_sample_rate=negative_sample_rate,
-                                    spectral=spectral, parallel=parallel)
+                                    spectral=spectral, parallel=parallel, sgd=sgd)

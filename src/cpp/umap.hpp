@@ -29,6 +29,19 @@ void umap_optimize_euclidean(float* embedding, int64_t n, int dim, const int32_t
                              const int32_t* tail, int64_t n_edges, const double* epochs_per_sample,
                              const int64_t* rng_state, const UmapSgdParams& p);
 
+// Deterministic parallel variant.  Edges are given in CSR order by head
+// (indptr over vertices, tail[e], epochs_per_sample[e]) of a symmetric graph.
+// Vertices are processed in fixed blocks of `block` in index order (block
+// Gauss-Seidel, close to umap's sequential edge order); within a block each
+// vertex is updated by one thread from its own edges only (the attractive
+// move it would receive as the tail of the reverse edge, which has the same
+// schedule, is applied with it), reading coordinates as of the block start.
+// Negative samples come from a stateless hash of (seed, edge, epoch).  The
+// result does not depend on the number of threads or on scheduling.
+void umap_optimize_euclidean_det(float* embedding, int64_t n, int dim, const int64_t* indptr,
+                                 const int32_t* tail, const double* epochs_per_sample, uint64_t seed,
+                                 const UmapSgdParams& p, int64_t block = 0);
+
 // y = A x for a CSR float64 matrix, row-parallel (each row summed in order,
 // identical to scipy's csr_matvec and independent of the thread count).
 void csr_matvec(const int64_t* indptr, const int32_t* indices, const double* data, int64_t n_rows,
