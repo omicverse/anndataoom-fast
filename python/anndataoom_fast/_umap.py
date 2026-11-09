@@ -180,8 +180,9 @@ def simplicial_set_embedding(graph, n_components: int = 2, *, a: float, b: float
     if sgd == "parallel":
         g = graph.tocsr()  # rows of a summed COO are sorted; keep the same edge order
         assert np.array_equal(g.indices, graph.col.astype(g.indices.dtype))
-        seed = int(np.uint64(np.int64(rng_state[0])) * np.uint64(0x9E3779B97F4A7C15)
-                   ^ np.uint64(np.int64(rng_state[1])) ^ (np.uint64(np.int64(rng_state[2])) << np.uint64(32)))
+        M = (1 << 64) - 1
+        r0, r1, r2 = (int(x) & M for x in rng_state)
+        seed = ((r0 * 0x9E3779B97F4A7C15) & M) ^ r1 ^ ((r2 << 32) & M)
         _core.umap_optimize_euclidean_det(emb, g.indptr.astype(np.int64), g.indices.astype(np.int32),
                                           eps, seed, float(a), float(b), float(gamma),
                                           float(initial_alpha), float(negative_sample_rate),
