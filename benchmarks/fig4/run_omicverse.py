@@ -5,7 +5,8 @@
 Uses brisc-benchmarking's MemoryTimer so time and memory are measured exactly
 as for brisc.  Steps follow omicverse's documented workflow:
   qc(seurat) -> preprocess(shiftlog|pearson, 2000 HVGs) -> scale -> pca(50)
-  -> neighbors(15) -> leiden at 5 resolutions -> umap -> find_markers(cosg).
+  -> neighbors(15) -> leiden at 5 resolutions -> localmap (cpp) and umap
+  -> find_markers(cosg).
 """
 import argparse
 import os
@@ -52,10 +53,14 @@ if __name__ == "__main__":
     with timers("Nearest neighbors"):
         ov.pp.neighbors(adata, n_neighbors=15, use_rep="scaled|original|X_pca")
     with timers("Clustering"):
-        # n_iterations=2: scanpy's announced default; brisc runs one Leiden iteration.
+        # cpp: brisc's Leiden (default flavor).  python: leidenalg with
+        # n_iterations=2, scanpy's announced default (-1 takes hours here).
         ov.pp.leiden(adata, resolution=[0.25, 0.5, 1.0, 1.5, 2.0], key_added="leiden",
                      n_iterations=2)
-    with timers("Embedding"):
+    if a.backend == "cpp":
+        with timers("Embedding (LocalMAP)"):
+            ov.pp.localmap(adata, use_rep="scaled|original|X_pca")
+    with timers("Embedding (UMAP)"):
         ov.pp.umap(adata)
     with timers("Find markers"):
         ov.single.find_markers(adata, groupby=a.groupby, method="cosg", n_genes=50)

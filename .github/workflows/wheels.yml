@@ -37,6 +37,30 @@ jobs:
           name: wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
 
+  # glibc 2.17 wheels for older Linux (CentOS/RHEL 7-based HPC clusters).
+  # Recent h5py releases only ship manylinux_2_28 wheels, so the tests install
+  # h5py < 3.15 here; CPython 3.14 has no such h5py, so it is built but not
+  # tested in this image (the same code is tested on every other platform).
+  build_wheels_2014:
+    name: wheels manylinux2014 ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pypa/cibuildwheel@v3.2
+        env:
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux2014
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux2014
+          CIBW_TEST_REQUIRES: "pytest scikit-learn h5py<3.15"
+          CIBW_TEST_SKIP: "cp314-*"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-manylinux2014-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
   sdist:
     runs-on: ubuntu-latest
     steps:
@@ -48,7 +72,7 @@ jobs:
           path: dist/*.tar.gz
 
   publish:
-    needs: [build_wheels, sdist]
+    needs: [build_wheels, build_wheels_2014, sdist]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi

@@ -21,9 +21,11 @@ COLORS = {"brisc": "#e16032", "omicverse-cpp": "#7058be", "omicverse-python": "#
 LABELS = {"brisc": "brisc", "omicverse-cpp": "omicverse (backend='cpp')",
           "omicverse-python": "omicverse (backend='python')"}
 OPS = ["Load data", "Quality control", "Normalization + feature selection", "PCA",
-       "Nearest neighbors", "Clustering", "Embedding", "Find markers", "Total"]
+       "Nearest neighbors", "Clustering", "Embedding (LocalMAP)", "Embedding (UMAP)",
+       "Find markers", "Total"]
 OP_LAB = {"Normalization + feature selection": "Normalization +\nfeature selection",
-          "Clustering": "Cluster\n(5 resolutions)"}
+          "Clustering": "Cluster\n(5 resolutions)",
+          "Embedding (LocalMAP)": "Embedding\n(LocalMAP)", "Embedding (UMAP)": "Embedding\n(UMAP)"}
 REF = "brisc"
 
 
@@ -43,8 +45,12 @@ def load(results, dataset):
                                                "Feature selection": "Normalization + feature selection"})
     g = df.groupby(["library", "rep", "operation"], as_index=False).agg(
         duration=("duration", "sum"), memory=("memory", "max"))
-    tot = g.groupby(["library", "rep"], as_index=False).agg(duration=("duration", "sum"),
-                                                            memory=("memory", "max"))
+    # Total = the paper's standard workflow, embedding by LocalMAP where the
+    # library has it (UMAP otherwise).
+    has_lm = set(g.loc[g["operation"] == "Embedding (LocalMAP)", "library"])
+    keep = ~((g["operation"] == "Embedding (UMAP)") & g["library"].isin(has_lm))
+    tot = g[keep].groupby(["library", "rep"], as_index=False).agg(duration=("duration", "sum"),
+                                                                  memory=("memory", "max"))
     tot["operation"] = "Total"
     g = pd.concat([g, tot])
     return g.groupby(["library", "operation"], as_index=False).agg(

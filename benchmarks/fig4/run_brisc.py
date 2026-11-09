@@ -37,8 +37,11 @@ if __name__ == "__main__":
         data = data.neighbors().shared_neighbors()
     with timers("Clustering"):
         data = data.cluster(resolution=[0.25, 0.5, 1.0, 1.5, 2.0])
-    with timers("Embedding"):
+    with timers("Embedding (LocalMAP)"):
         data = data.localmap()
+    if NUM_THREADS != 1:  # as in brisc-benchmarking: UMAP only multithreaded (Hogwild)
+        with timers("Embedding (UMAP)"):
+            data = data.umap(hogwild=True)
     with timers("Find markers"):
         markers = data.find_markers("cell_type", all_genes=True)
     timers.shutdown()
