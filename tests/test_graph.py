@@ -139,3 +139,22 @@ def test_knn_cache_reused_and_exact():
     sq = np.square(ref21[1][:, 1:])
     b = aof.localmap(X, knn_indices=ref21[0][:, 1:], knn_dists=sq, num_iterations=20)
     assert np.array_equal(a, b)
+
+
+def test_group_stats_any_accepts_device_arrays():
+    """omicverse's GPU mode keeps .X on the GPU; COSG copies it to the host."""
+    cp = pytest.importorskip("cupy")
+    try:
+        cp.cuda.runtime.getDeviceCount()
+    except Exception:
+        pytest.skip("no CUDA device")
+    import cupyx.scipy.sparse as csp
+    from anndataoom_fast import _omicverse
+    rng = np.random.default_rng(3)
+    X = sp.random(500, 80, density=0.1, random_state=4, format="csr", dtype=np.float32)
+    lab = rng.integers(0, 4, 500).astype(str)
+    ref = _omicverse._group_stats_any(X, lab)
+    _omicverse._STATS_CACHE.clear()
+    got = _omicverse._group_stats_any(csp.csr_matrix(X), lab)
+    for a, b in zip(ref[1:], got[1:]):
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))

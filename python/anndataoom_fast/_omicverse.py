@@ -80,6 +80,15 @@ def _expression_matrix(adata, use_raw, layer):
     return adata.X, adata.var_names
 
 
+def _to_host(X):
+    """A CPU copy of a CuPy / cupyx.scipy.sparse matrix (omicverse's GPU mode
+    keeps .X on the device); other inputs are returned unchanged."""
+    mod = type(X).__module__ or ""
+    if mod.startswith(("cupy", "cupyx")) and hasattr(X, "get"):
+        return X.get()
+    return X
+
+
 def _group_stats_any(X, labels):
     """group_stats for in-memory CSR or anndataoom lazy matrices (cached)."""
     from ._markers import group_stats
@@ -101,6 +110,7 @@ def _group_stats_any(X, labels):
         s, q, z = _core.group_pass(v.handle.src, grp, len(groups), v.col_map(), v.recip(), v.log1p)
         out = (groups, sizes, s, q, z)
     else:
+        X = _to_host(X)
         if not sp.issparse(X):
             X = sp.csr_matrix(np.asarray(X))
         out = group_stats(X, labels)

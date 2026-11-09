@@ -23,6 +23,9 @@ ap.add_argument("num_threads", type=int)
 ap.add_argument("out_csv")
 ap.add_argument("rep", type=int)
 ap.add_argument("--backend", choices=["cpp", "python"], required=True)
+ap.add_argument("--mode", choices=["cpu", "mixed", "gpu"], default="cpu",
+                help="omicverse settings mode: cpu; mixed = CPU preprocessing (out of core) "
+                     "with PCA/neighbors/UMAP/Leiden on the GPU; gpu = RAPIDS, data in GPU memory")
 ap.add_argument("--groupby", default="cell_type")
 a = ap.parse_args()
 
@@ -31,17 +34,29 @@ if __name__ == "__main__":
     import anndataoom as oom
     import omicverse as ov
     import omicverse.single  # noqa: F401
-    ov.settings.cpu_init()
+    if a.mode == "gpu":
+        ov.settings.gpu_init()
+    elif a.mode == "mixed":
+        ov.settings.cpu_gpu_mixed_init()
+    else:
+        ov.settings.cpu_init()
     ov.settings.backend = a.backend
+    label = f"omicverse-{a.backend}" if a.mode == "cpu" else f"omicverse-{a.mode}"
     if a.backend == "cpp":
         import anndataoom_fast
         anndataoom_fast.set_num_threads(a.num_threads)
     timers = MemoryTimer(silent=False, csv_path=a.out_csv,
-                         csv_columns={"library": f"omicverse-{a.backend}", "test": "basic",
+                         csv_columns={"library": label, "test": "basic",
                                       "dataset": a.data_name, "num_threads": a.num_threads,
                                       "rep": a.rep})
     with timers("Load data"):
-        adata = oom.read(a.data_path)
+        if a.mode == "gpu":
+            # RAPIDS needs the whole matrix in (GPU) memory.
+            import anndata
+            adata = anndata.read_h5ad(a.data_path)
+            ov.pp.anndata_to_GPU(adata)
+        else:
+            adata = oom.read(a.data_path)
     with timers("Quality control"):
         out = ov.pp.qc(adata, mode="seurat", doublets=False)
         adata = adata if out is None else out
@@ -55,9 +70,11 @@ if __name__ == "__main__":
     with timers("Clustering"):
         # cpp: brisc's Leiden (default flavor).  python: leidenalg with
         # n_iterations=2, scanpy's announced default (-1 takes hours here).
-        ov.pp.leiden(adata, resolution=[0.25, 0.5, 1.0, 1.5, 2.0], key_added="leiden",
-                     n_iterations=2)
-    if a.backend == "cpp":
+        # One call with five resolutions in every mode (parallel with
+        # backend='cpp'; the GPU modes run them one after another).
+        kw = {"n_iterations": 2} if a.mode == "cpu" else {}
+        ov.pp.leiden(adata, resolution=[0.25, 0.5, 1.0, 1.5, 2.0], key_added="leiden", **kw)
+    if a.backend == "cpp" and a.mode != "gpu":
         with timers("Embedding (LocalMAP)"):
             ov.pp.localmap(adata, use_rep="scaled|original|X_pca")
     with timers("Embedding (UMAP)"):
