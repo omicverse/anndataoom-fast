@@ -1,7 +1,14 @@
 #include "reader.hpp"
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -37,7 +44,24 @@ ReadScratch::ReadScratch(ReadScratch&& o) noexcept
     o.inflater = nullptr;
 }
 
-static int open_ro(const std::string& path) {
+// Files are opened read-only and read with positional reads, which are safe
+// to issue from many threads on one descriptor (pread / ReadFile+OVERLAPPED).
+#ifdef _WIN32
+static intptr_t open_ro(const std::string& path) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n : 1, L'\0');
+    if (n > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, &w[0], n);
+    HANDLE h = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        throw std::runtime_error("cannot open " + path + ": Windows error " +
+                                 std::to_string(GetLastError()));
+    return reinterpret_cast<intptr_t>(h);
+}
+
+static void close_fd(intptr_t fd) { CloseHandle(reinterpret_cast<HANDLE>(fd)); }
+#else
+static intptr_t open_ro(const std::string& path) {
     int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0)
         throw std::runtime_error("cannot open " + path + ": " + std::strerror(errno));
@@ -46,6 +70,9 @@ static int open_ro(const std::string& path) {
 #endif
     return fd;
 }
+
+static void close_fd(intptr_t fd) { ::close((int)fd); }
+#endif
 
 Dataset::Dataset(std::string path, DType dtype, int64_t n_elems, int64_t offset)
     : path_(std::move(path)), dtype_(dtype), esz_(dtype_size(dtype)),
@@ -78,12 +105,28 @@ Dataset::Dataset(const void* data, DType dtype, int64_t n_elems)
 }
 
 Dataset::~Dataset() {
-    if (fd_ >= 0) ::close(fd_);
+    if (fd_ != -1) close_fd(fd_);
 }
 
 void Dataset::pread_full(unsigned char* buf, std::size_t n, int64_t off) const {
+#ifdef _WIN32
+    HANDLE h = reinterpret_cast<HANDLE>(fd_);
     while (n > 0) {
-        ssize_t r = ::pread(fd_, buf, n, (off_t)off);
+        DWORD want = (DWORD)std::min<std::size_t>(n, 1u << 30), got = 0;
+        OVERLAPPED ov{};
+        ov.Offset = (DWORD)((uint64_t)off & 0xffffffffu);
+        ov.OffsetHigh = (DWORD)((uint64_t)off >> 32);
+        if (!ReadFile(h, buf, want, &got, &ov))
+            throw std::runtime_error("ReadFile failed on " + path_ + ": Windows error " +
+                                     std::to_string(GetLastError()));
+        if (got == 0) throw std::runtime_error("unexpected end of file in " + path_);
+        buf += got;
+        n -= got;
+        off += got;
+    }
+#else
+    while (n > 0) {
+        ssize_t r = ::pread((int)fd_, buf, n, (off_t)off);
         if (r < 0) {
             if (errno == EINTR) continue;
             throw std::runtime_error("pread failed on " + path_ + ": " + std::strerror(errno));
@@ -93,6 +136,7 @@ void Dataset::pread_full(unsigned char* buf, std::size_t n, int64_t off) const {
         n -= (std::size_t)r;
         off += r;
     }
+#endif
 }
 
 static void unshuffle(const unsigned char* in, unsigned char* out, std::size_t nbytes,

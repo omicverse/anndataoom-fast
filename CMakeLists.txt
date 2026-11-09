@@ -11,7 +11,24 @@ endif()
 option(AOF_NATIVE "Tune for the build machine (-march=native); off for wheels" OFF)
 
 find_package(Python 3.9 COMPONENTS Interpreter Development.Module REQUIRED)
-find_package(OpenMP REQUIRED)
+if(MSVC)
+  # MSVC's default /openmp is OpenMP 2.0; the LLVM runtime has the 3.x API
+  # (omp_set_max_active_levels) used here.
+  add_library(aof_openmp INTERFACE)
+  target_compile_options(aof_openmp INTERFACE $<$<COMPILE_LANGUAGE:CXX>:/openmp:llvm>)
+else()
+  find_package(OpenMP REQUIRED)
+  add_library(aof_openmp INTERFACE)
+  target_link_libraries(aof_openmp INTERFACE OpenMP::OpenMP_CXX)
+endif()
+
+# No -ffast-math and no implicit a*b+c -> fma contraction: results must be
+# bit-identical across machines and between native and portable builds.
+if(MSVC)
+  set(AOF_FP_FLAGS /O2 /fp:precise /EHsc /bigobj)
+else()
+  set(AOF_FP_FLAGS -O3 -fno-math-errno -ffp-contract=off)
+endif()
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
   OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE nanobind_ROOT)
@@ -37,11 +54,9 @@ nanobind_add_module(_core NB_STATIC
   src/cpp/fuzzy.cpp
   src/cpp/umap.cpp
   src/cpp/groupstats.cpp)
-target_link_libraries(_core PRIVATE aof_deflate OpenMP::OpenMP_CXX)
-# No -ffast-math, and no implicit a*b+c -> fma contraction: results must be
-# bit-identical across machines and between native and portable builds.
-target_compile_options(_core PRIVATE -O3 -fno-math-errno -ffp-contract=off)
-if(AOF_NATIVE)
+target_link_libraries(_core PRIVATE aof_deflate aof_openmp)
+target_compile_options(_core PRIVATE ${AOF_FP_FLAGS})
+if(AOF_NATIVE AND NOT MSVC)
   target_compile_options(_core PRIVATE -march=native)
 endif()
 
@@ -51,10 +66,10 @@ install(TARGETS _core LIBRARY DESTINATION anndataoom_fast)
 nanobind_add_module(_leiden_cpp NB_STATIC
   src/cpp/leiden/bindings_leiden.cpp
   src/cpp/leiden/leiden.cpp)
-target_link_libraries(_leiden_cpp PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(_leiden_cpp PRIVATE aof_openmp)
 # Bit-exact floating point vs libleidenalg: no -ffast-math, no fma contraction.
-target_compile_options(_leiden_cpp PRIVATE -O3 -fno-math-errno -ffp-contract=off)
-if(AOF_NATIVE)
+target_compile_options(_leiden_cpp PRIVATE ${AOF_FP_FLAGS})
+if(AOF_NATIVE AND NOT MSVC)
   target_compile_options(_leiden_cpp PRIVATE -march=native)
 endif()
 install(TARGETS _leiden_cpp LIBRARY DESTINATION anndataoom_fast)

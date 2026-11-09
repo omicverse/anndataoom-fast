@@ -81,7 +81,7 @@ private:
     void pread_full(unsigned char* buf, std::size_t n, int64_t off) const;
 
     std::string path_;
-    int fd_ = -1;
+    intptr_t fd_ = -1;  // POSIX fd or Windows HANDLE
     DType dtype_;
     std::size_t esz_;
     int64_t n_elems_;

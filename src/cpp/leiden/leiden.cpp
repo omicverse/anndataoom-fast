@@ -21,6 +21,10 @@
 
 #include "leiden.hpp"
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#define __builtin_prefetch(...) ((void)0)
+#endif
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
