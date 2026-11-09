@@ -14,8 +14,40 @@ def default_n_clusters(n: int) -> int:
     return max(1, math.ceil(min(4 * math.sqrt(n), n / 100)))
 
 
+# One cached kNN result per process: ov.pp.neighbors searches a few extra
+# neighbours, and a later embedding (LocalMAP / PaCMAP) on the same
+# representation reuses them instead of searching again.  Searching k
+# neighbours and keeping the first j gives exactly the j-neighbour result.
+_KNN_CACHE: dict = {}
+
+
+def _digest(X: np.ndarray) -> bytes:
+    import hashlib
+    h = hashlib.blake2b(digest_size=16)
+    h.update(np.asarray(X.shape, dtype=np.int64).tobytes())
+    h.update(memoryview(X).cast("B"))
+    return h.digest()
+
+
+def cached_knn(X, n_neighbors: int, **search):
+    """The cached result of :func:`knn` on ``X`` if it has ``>= n_neighbors``
+    columns and the same search settings, else ``None``."""
+    X = np.ascontiguousarray(X, dtype=np.float32)
+    c = _KNN_CACHE.get("last")
+    if c is None or c["settings"] != _settings(**search) or c["idx"].shape[1] < n_neighbors:
+        return None
+    if c["shape"] != X.shape or c["digest"] != _digest(X):
+        return None
+    return c["idx"][:, :n_neighbors].copy(), c["dist"][:, :n_neighbors].copy()
+
+
+def _settings(n_clusters=None, n_probe=64, kmeans_iters=4, exact=False, random_state=0):
+    return (n_clusters, int(n_probe), int(kmeans_iters), bool(exact), int(random_state))
+
+
 def knn(X, n_neighbors: int = 15, *, n_clusters: int | None = None, n_probe: int = 64,
-        kmeans_iters: int = 4, exact: bool = False, random_state: int = 0):
+        kmeans_iters: int = 4, exact: bool = False, random_state: int = 0,
+        cache_neighbors: int | None = None):
     """Nearest neighbours of every row of ``X`` (Euclidean).
 
     Returns ``(indices, distances)`` of shape ``(n, n_neighbors)`` in scanpy's
@@ -26,9 +58,23 @@ def knn(X, n_neighbors: int = 15, *, n_clusters: int | None = None, n_probe: int
     each query scans its ``n_probe`` nearest clusters); ``exact=True`` scans
     every cluster and returns exact brute-force neighbours.  The output does
     not depend on the number of threads.
+
+    ``cache_neighbors``: search ``max(n_neighbors, cache_neighbors)``
+    neighbours, return the first ``n_neighbors`` (identical to searching
+    ``n_neighbors``) and keep the full result for :func:`cached_knn`.
     """
     X = np.ascontiguousarray(X, dtype=np.float32)
     n = X.shape[0]
+    settings = dict(n_clusters=n_clusters, n_probe=n_probe, kmeans_iters=kmeans_iters,
+                    exact=exact, random_state=random_state)
+    hit = cached_knn(X, n_neighbors, **settings)
+    if hit is not None:
+        return hit
+    if cache_neighbors is not None and min(int(cache_neighbors), n) > n_neighbors:
+        full_i, full_d = knn(X, min(int(cache_neighbors), n), **settings)
+        _KNN_CACHE["last"] = dict(settings=_settings(**settings), shape=X.shape,
+                                  digest=_digest(X), idx=full_i, dist=full_d)
+        return full_i[:, :n_neighbors].copy(), full_d[:, :n_neighbors].copy()
     if n_neighbors < 1:
         raise ValueError("n_neighbors must be >= 1")
     if n_neighbors > n:
@@ -98,7 +144,8 @@ class IVFKNNTransformer:
         X = np.asarray(X.toarray() if sp.issparse(X) else X, dtype=np.float32)
         rs = self.random_state if isinstance(self.random_state, (int, np.integer)) else 0
         k = min(self.n_neighbors + 1, X.shape[0])
-        idx, dist = knn(X, k, random_state=int(rs))
+        # A few extra neighbours are cached for LocalMAP / PaCMAP (20 needed).
+        idx, dist = knn(X, k, random_state=int(rs), cache_neighbors=21)
         n = X.shape[0]
         D = sp.csr_matrix((dist.ravel(), idx.ravel(), np.arange(0, n * k + 1, k)), shape=(n, n))
         D.has_sorted_indices = False

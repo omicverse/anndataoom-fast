@@ -118,3 +118,24 @@ def test_umap_parallel_sgd_deterministic_and_close_to_sequential():
         return np.mean([len(set(a[1:]) & set(b[1:])) / 15 for a, b in zip(I, idx)])
 
     assert preservation(runs[0]) > 0.95 * preservation(seq)
+
+
+def test_knn_cache_reused_and_exact():
+    from anndataoom_fast import _neighbors
+    X, _ = _blobs(3000, seed=3)
+    _neighbors._KNN_CACHE.clear()
+    ref16 = knn(X, 16)
+    ref21 = knn(X, 21)
+    _neighbors._KNN_CACHE.clear()
+    got16 = knn(X, 16, cache_neighbors=21)          # searches 21, returns 16
+    assert all(np.array_equal(a, b) for a, b in zip(got16, ref16))
+    hit = _neighbors.cached_knn(X, 21)
+    assert hit is not None and all(np.array_equal(a, b) for a, b in zip(hit, ref21))
+    assert _neighbors.cached_knn(X + 1, 21) is None   # different data: no hit
+    assert _neighbors.cached_knn(X, 22) is None       # not enough neighbours
+    # LocalMAP takes its 20 neighbours from the cache
+    a = aof.localmap(X, num_iterations=20)
+    _neighbors._KNN_CACHE.clear()
+    sq = np.square(ref21[1][:, 1:])
+    b = aof.localmap(X, knn_indices=ref21[0][:, 1:], knn_dists=sq, num_iterations=20)
+    assert np.array_equal(a, b)

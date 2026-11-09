@@ -45,6 +45,15 @@ def _prepare_knn(X, knn_indices, knn_dists, k_needed, random_state):
     if knn_indices is None:
         if knn_dists is not None:
             raise ValueError("knn_dists given without knn_indices")
+        # Reuse the neighbours of a previous kNN search on the same
+        # coordinates (e.g. ov.pp.neighbors with backend='cpp') if it has
+        # enough of them; otherwise search with brisc's method.
+        from ._neighbors import cached_knn
+        hit = cached_knn(X, k_needed + 1)
+        if hit is not None:
+            idx, dist = hit
+            return (np.ascontiguousarray(idx[:, 1:], dtype=np.uint32),
+                    np.ascontiguousarray(np.square(dist[:, 1:]), dtype=np.float32))
         return brisc_knn(X, k_needed, random_state=random_state)
     if knn_dists is None:
         raise ValueError("knn_indices given without knn_dists")
