@@ -66,7 +66,7 @@ through the C++ engine in place.
 | UMAP layout (`sgd='parallel'`, default) | same objective, edge schedule and negative sampling as umap-learn; same embedding for any thread count; `sgd='sequential'` = umap-learn's algorithm |
 | Leiden (`leiden`, RBConfiguration) | leidenalg, identical partitions |
 | Leiden, brisc flavour (`leiden_brisc`) | brisc, identical labels |
-| PaCMAP / LocalMAP (`pacmap`, `localmap`) | brisc, bit-identical embeddings given the same kNN (LocalMAP: on x86) |
+| PaCMAP / LocalMAP (`pacmap`, `localmap`) | brisc's algorithms; PaCMAP bit-identical to brisc given the same kNN; LocalMAP identical on every machine (brisc's own LocalMAP depends on the CPU's RSQRTSS) |
 | COSG markers | omicverse, identical top-n lists |
 | kNN | approximate (IVF), recall > 0.99; `exact=True` for brute force |
 

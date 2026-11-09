@@ -168,14 +168,30 @@ inline void max_heap_sort(uint32_t* labels, float* dists, uint32_t k) {
 // Floating-point helpers shared by both kernel builds
 // ---------------------------------------------------------------------------
 
-// RSQRTSS estimate (relative error < 1.5 * 2^-12; the exact bits are those of
-// the CPU's instruction, as in brisc).  Portable fallback: 1 / sqrt(x).
+// Starting value of the reciprocal square root refined by one Newton step in
+// LocalMAP phase 3.  brisc's compiler emits the CPU's RSQRTSS estimate, whose
+// bits differ between CPU vendors; by default we start from the correctly
+// rounded 1 / sqrt(x) instead, so the embedding is identical on every
+// machine.  AOF_EMBED_BRISC_RSQRT=1 (x86 only) uses RSQRTSS and reproduces
+// brisc bit for bit on the same CPU.
+bool brisc_rsqrt_enabled() {
+#if defined(AOF_EMBED_X86)
+    static const bool on = [] {
+        const char* v = std::getenv("AOF_EMBED_BRISC_RSQRT");
+        return v && v[0] && v[0] != '0';
+    }();
+    return on;
+#else
+    return false;
+#endif
+}
+
 inline float rsqrt_estimate(float x) {
 #if defined(AOF_EMBED_X86)
-    return _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(x)));
-#else
-    return 1.0f / std::sqrt(x);
+    static const bool hw = brisc_rsqrt_enabled();
+    if (hw) return _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(x)));
 #endif
+    return 1.0f / std::sqrt(x);
 }
 
 // 8 -> 4 -> 2 -> 1 lane fold of GCC's vector reduction epilogue

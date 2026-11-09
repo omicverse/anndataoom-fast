@@ -4,6 +4,13 @@ brisc is not a test dependency, so its embeddings for a few deterministic
 inputs are stored in tests/data/brisc_embed_fixtures.npz (regenerate with
 tests/data/make_embed_fixtures.py in an environment that has brisc).
 Embeddings must be identical element for element, for any thread count.
+
+PaCMAP matches brisc on every machine.  brisc's LocalMAP starts a Newton step
+from the CPU's RSQRTSS estimate, whose bits depend on the CPU; ours starts
+from 1/sqrt by default, so LocalMAP is compared with our own machine-
+independent outputs (tests/data/localmap_portable.npz).  With
+AOF_EMBED_BRISC_RSQRT=1 on the x86 CPU the brisc fixtures were made on,
+set AOF_TEST_BRISC_CPU=1 to check LocalMAP against brisc as well.
 """
 import importlib.util
 import os
@@ -24,6 +31,7 @@ mk = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mk)
 
 FIXTURES = np.load(HERE / "data" / "brisc_embed_fixtures.npz")
+PORTABLE = np.load(HERE / "data" / "localmap_portable.npz")
 X86 = platform.machine().lower() in ("x86_64", "amd64", "i386", "i686", "x86")
 
 # brisc keyword -> ours
@@ -59,15 +67,31 @@ def run(name, meth, n_threads):
 @pytest.mark.parametrize("name", sorted(mk.CASES))
 @pytest.mark.parametrize("meth", ["pacmap", "localmap"])
 def test_matches_brisc(name, meth):
-    ref = FIXTURES[f"{name}_{meth}"]
+    ref = expected(name, meth)
     out = run(name, meth, 4)
     assert out.dtype == np.float32 and out.shape == ref.shape
-    if meth == "localmap" and not X86:
-        # LocalMAP's phase 3 uses the CPU's RSQRTSS estimate, as brisc does;
-        # elsewhere 1/sqrt is used, so only closeness can be checked.
-        np.testing.assert_allclose(out, ref, rtol=0, atol=0.5)
-    else:
-        assert np.array_equal(out, ref)
+    assert np.array_equal(out, ref)
+
+
+def expected(name, meth):
+    if meth == "localmap":
+        return PORTABLE[f"{name}_localmap"]
+    return FIXTURES[f"{name}_{meth}"]
+
+
+@pytest.mark.skipif(not (X86 and os.environ.get("AOF_TEST_BRISC_CPU") == "1"),
+                    reason="needs the x86 CPU the brisc fixtures were made on")
+def test_localmap_matches_brisc_with_rsqrtss():
+    code = (
+        "import sys, numpy as np\n"
+        f"sys.path.insert(0, {str(HERE)!r})\n"
+        "import test_embed as t\n"
+        "for name in sorted(t.mk.CASES):\n"
+        "    assert np.array_equal(t.run(name, 'localmap', 3), t.FIXTURES[f'{name}_localmap']), name\n"
+        "print('ok')\n")
+    env = dict(os.environ, AOF_EMBED_BRISC_RSQRT="1")
+    r = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    assert r.returncode == 0 and "ok" in r.stdout, r.stderr[-2000:]
 
 
 @pytest.mark.parametrize("meth", ["pacmap", "localmap"])
@@ -86,7 +110,7 @@ def test_generic_kernels_identical():
         "for name in sorted(t.mk.CASES):\n"
         "    for meth in ('pacmap', 'localmap'):\n"
         "        out = t.run(name, meth, 3)\n"
-        "        assert np.array_equal(out, t.FIXTURES[f'{name}_{meth}']), (name, meth)\n"
+        "        assert np.array_equal(out, t.expected(name, meth)), (name, meth)\n"
         "print('ok')\n")
     if not X86:
         pytest.skip("generic kernels are the only kernels off x86")
@@ -98,7 +122,7 @@ def test_generic_kernels_identical():
 def test_pairs_and_defaults():
     pcs, nbr, dist = inputs("a")
     out, pairs = aof.localmap(pcs, knn_indices=nbr, knn_dists=dist, return_pairs=True)
-    assert np.array_equal(out, FIXTURES["a_localmap"])
+    assert np.array_equal(out, PORTABLE["a_localmap"])
     n = len(pcs)
     assert pairs["neighbor_pairs"].shape == (n, 10)
     assert pairs["mid_near_pairs"].shape == (n, 5)

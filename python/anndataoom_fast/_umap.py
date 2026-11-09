@@ -27,8 +27,18 @@ INT32_MAX = np.iinfo(np.int32).max - 1
 
 
 def find_ab_params(spread: float = 1.0, min_dist: float = 0.5):
-    from umap.umap_ import find_ab_params as _f
-    return _f(spread, min_dist)
+    """umap-learn's find_ab_params (same curve fit), without importing umap."""
+    from scipy.optimize import curve_fit
+
+    def curve(x, a, b):
+        return 1.0 / (1.0 + a * x ** (2 * b))
+
+    xv = np.linspace(0, spread * 3, 300)
+    yv = np.zeros(xv.shape)
+    yv[xv < min_dist] = 1.0
+    yv[xv >= min_dist] = np.exp(-(xv[xv >= min_dist] - min_dist) / spread)
+    params, _ = curve_fit(curve, xv, yv)
+    return params[0], params[1]
 
 
 def _spectral_fast(graph: sp.coo_matrix, dim: int, tol: float = 1e-4):
