@@ -17,6 +17,12 @@ if(MSVC)
   add_library(aof_openmp INTERFACE)
   target_compile_options(aof_openmp INTERFACE $<$<COMPILE_LANGUAGE:CXX>:/openmp:llvm>)
 else()
+  # conda-forge's libomp has the install name @rpath/libomp.dylib; record its
+  # directory as an rpath so delocate can find and bundle it into the wheel.
+  if(APPLE AND DEFINED ENV{OpenMP_ROOT})
+    set(CMAKE_BUILD_RPATH "$ENV{OpenMP_ROOT}/lib")
+    set(CMAKE_INSTALL_RPATH "$ENV{OpenMP_ROOT}/lib")
+  endif()
   find_package(OpenMP REQUIRED)
   add_library(aof_openmp INTERFACE)
   target_link_libraries(aof_openmp INTERFACE OpenMP::OpenMP_CXX)
