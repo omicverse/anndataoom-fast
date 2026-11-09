@@ -309,9 +309,18 @@ GroupPassResult group_pass(const CSRSource& src, const std::vector<int32_t>& gro
     const double slot_bytes = 3.0 * (double)C * (double)K * 8.0;
     const int slots = std::max(2, std::min(default_slots(), (int)(2e9 / std::max(slot_bytes, 1.0))));
     OrderedGeneSums acc(3, C * K, slots);
+    // Merging a 3 x C x K slot after every block costs more memory traffic
+    // than reading the block; group blocks so that each merge is amortised
+    // over >= 16 stored values per slot entry.  Depends on C, K and the
+    // block layout only, never on the thread count.
+    int64_t total_elems = src.indptr.back(), nb = std::max<int64_t>(1, src.n_blocks());
+    const double per_block = (double)total_elems / (double)nb;
+    const int64_t group_blocks = std::max<int64_t>(
+        1, (int64_t)std::ceil(16.0 * 3.0 * (double)C * (double)K / std::max(per_block, 1.0)));
     dispatch_values(src, [&](auto tag) {
         using V = decltype(tag);
-        for_each_block<V>(src, &acc.reducer(), [&](int64_t, int slot, const Block<V>& b) {
+        for_each_block_grouped<V>(src, &acc.reducer(), group_blocks,
+                                  [&](int64_t, int slot, const Block<V>& b) {
             double* s1 = acc.slot(slot, 0);
             double* s2 = acc.slot(slot, 1);
             double* nz = acc.slot(slot, 2);

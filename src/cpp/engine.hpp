@@ -219,4 +219,33 @@ void for_each_block(const CSRSource& src, OrderedReducer* red, Fn&& fn) {
     });
 }
 
+// Like for_each_block, but each task decodes `group` consecutive blocks into
+// one reduction slot, so a large slot (e.g. groups x genes) is merged once per
+// `group` blocks instead of once per block.  `group` must not depend on the
+// thread count; the result then does not either.
+template <class V, class Fn>
+void for_each_block_grouped(const CSRSource& src, OrderedReducer* red, int64_t group, Fn&& fn) {
+    if (group < 1) group = 1;
+    const int nt = omp_get_max_threads();
+    std::vector<std::unique_ptr<ThreadCtx<V>>> ctx(nt);
+    for (auto& c : ctx) c = std::make_unique<ThreadCtx<V>>();
+    const int64_t nb = src.n_blocks();
+    const int64_t ns = (nb + group - 1) / group;
+    ordered_parallel(ns, red, [&](int64_t sb, int slot) {
+        ThreadCtx<V>& t = *ctx[omp_get_thread_num()];
+        const int64_t b_end = std::min(nb, (sb + 1) * group);
+        for (int64_t b = sb * group; b < b_end; ++b) {
+            const int64_t r_end = src.block_start[b + 1];
+            int64_t r0 = src.block_start[b];
+            while (r0 < r_end) {
+                int64_t r1 = r0 + 1;
+                while (r1 < r_end && src.indptr[r1 + 1] - src.indptr[r0] <= kSubBlockElems) ++r1;
+                load_rows(src, r0, r1, t);
+                fn(b, slot, t.blk);
+                r0 = r1;
+            }
+        }
+    });
+}
+
 }  // namespace aof
