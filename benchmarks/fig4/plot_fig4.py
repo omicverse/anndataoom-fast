@@ -64,9 +64,17 @@ def main():
     ap.add_argument("dataset")
     ap.add_argument("out")
     ap.add_argument("--title", default=None)
+    ap.add_argument("--note", action="append", default=[],
+                    help="LIBRARY:OPERATION:TEXT shown in place of a missing bar, "
+                         "e.g. 'omicverse-python:Find markers:out of memory (256 GB)'")
     a = ap.parse_args()
     d = load(a.results, a.dataset)
     libs = [l for l in COLORS if l in set(d["library"])]
+    notes = {}
+    for n in a.note:
+        lib, op, text = n.split(":", 2)
+        notes[(lib, op)] = text
+    expected = set(d.loc[d["operation"] != "Total", "operation"])
     ops = [o for o in OPS if o in set(d["operation"])]
 
     plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 9})
@@ -81,10 +89,17 @@ def main():
         vmax = sub["duration"].max()
         for j, lib in enumerate(reversed(libs)):
             if lib not in sub.index:
+                ax.text(vmax * 0.01, j, notes.get((lib, op), "not available"), va="center",
+                        ha="left", fontsize=7.5, color="#555555", style="italic")
                 continue
             t, m = sub.at[lib, "duration"], sub.at[lib, "memory"]
             ax.barh(j, max(t, vmax * 0.02), height=0.8, color=COLORS[lib])
             lab = fmt_time(t)
+            if op == "Total":
+                done = set(d.loc[(d["library"] == lib) & (d["operation"] != "Total"), "operation"])
+                missing = expected - done - {"Embedding (LocalMAP)", "Embedding (UMAP)"}
+                if missing:
+                    lab = "> " + lab + " (incomplete)"
             if ref is not None and lib != REF and ref > 0:
                 mult = t / ref
                 lab += f" ({mult:.1f}x)" if mult < 10 else f" ({mult:.0f}x)"
