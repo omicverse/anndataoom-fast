@@ -158,3 +158,50 @@ def test_group_stats_any_accepts_device_arrays():
     got = _omicverse._group_stats_any(csp.csr_matrix(X), lab)
     for a, b in zip(ref[1:], got[1:]):
         np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+
+def _dask_blocks(X, rows, to_device=lambda b: b):
+    import dask
+    import dask.array as da
+    parts = []
+    for r0 in range(0, X.shape[0], rows):
+        b = X[r0:r0 + rows]
+        parts.append(da.from_delayed(dask.delayed(to_device)(b), shape=b.shape, dtype=X.dtype,
+                                     meta=to_device(X[:0])))
+    return da.concatenate(parts, axis=0)
+
+
+@pytest.mark.parametrize("dense", [False, True])
+def test_group_stats_any_streams_dask_row_blocks(dense):
+    """omicverse's chunked mode (ov.read(backend='dask')): one pass over blocks."""
+    pytest.importorskip("dask")
+    from anndataoom_fast import _omicverse
+    rng = np.random.default_rng(5)
+    X = sp.random(700, 90, density=0.1, random_state=6, format="csr", dtype=np.float32)
+    lab = rng.integers(0, 5, 700).astype(str)
+    ref = _omicverse._group_stats_any(X, lab)
+    _omicverse._STATS_CACHE.clear()
+    D = _dask_blocks(X.toarray() if dense else X, 160)
+    got = _omicverse._group_stats_any(D, lab)
+    assert list(ref[0]) == list(got[0])
+    for a, b in zip(ref[1:], got[1:]):
+        np.testing.assert_allclose(np.asarray(b), np.asarray(a), rtol=1e-12)
+
+
+def test_group_stats_any_streams_dask_device_blocks():
+    pytest.importorskip("dask")
+    cp = pytest.importorskip("cupy")
+    try:
+        cp.cuda.runtime.getDeviceCount()
+    except Exception:
+        pytest.skip("no CUDA device")
+    import cupyx.scipy.sparse as csp
+    from anndataoom_fast import _omicverse
+    rng = np.random.default_rng(7)
+    X = sp.random(700, 90, density=0.1, random_state=8, format="csr", dtype=np.float32)
+    lab = rng.integers(0, 5, 700).astype(str)
+    ref = _omicverse._group_stats_any(X, lab)
+    _omicverse._STATS_CACHE.clear()
+    got = _omicverse._group_stats_any(_dask_blocks(X, 160, csp.csr_matrix), lab)
+    for a, b in zip(ref[1:], got[1:]):
+        np.testing.assert_allclose(np.asarray(b), np.asarray(a), rtol=1e-12)

@@ -89,8 +89,105 @@ def _to_host(X):
     return X
 
 
+def _is_dask(X):
+    return type(X).__module__.split(".")[0] == "dask" and hasattr(X, "to_delayed")
+
+
+_GROUP_KERNEL_SRC = r"""
+template <typename T, typename I>
+__global__ void group_rows(const I* indptr, const int* indices, const T* data, long long n_rows,
+                           const long long* codes, long long n_genes,
+                           double* gs, double* gq, double* gz) {
+    long long row = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n_rows) return;
+    long long base = codes[row] * n_genes;
+    for (I i = indptr[row]; i < indptr[row + 1]; ++i) {
+        double v = (double)data[i];
+        long long j = base + indices[i];
+        atomicAdd(gs + j, v);
+        atomicAdd(gq + j, v * v);
+        if (v != 0) atomicAdd(gz + j, 1.0);
+    }
+}
+"""
+_GROUP_KERNELS: dict = {}
+
+
+def _group_block_cuda(blk, codes, n_groups):
+    """GPU per-group statistics of a cupyx CSR block: one thread per row."""
+    import cupy as cp
+    blk = blk.tocsr()
+    if blk.data.dtype not in (cp.float32, cp.float64):
+        blk = blk.astype(cp.float32)
+    indices = blk.indices.astype(cp.int32, copy=False)
+    T = "float" if blk.data.dtype == cp.float32 else "double"
+    I = "int" if blk.indptr.dtype == cp.int32 else "long long"
+    name = f"group_rows<{T}, {I}>"
+    if not _GROUP_KERNELS:
+        exprs = [f"group_rows<{t}, {i}>" for t in ("float", "double") for i in ("int", "long long")]
+        _GROUP_KERNELS["module"] = cp.RawModule(code=_GROUP_KERNEL_SRC, options=("-std=c++14",),
+                                                name_expressions=exprs)
+    k = _GROUP_KERNELS.get(name) or _GROUP_KERNELS.setdefault(
+        name, _GROUP_KERNELS["module"].get_function(name))
+    n, G = blk.shape
+    out = [cp.zeros((n_groups, G)) for _ in range(3)]
+    threads = 128
+    k(((n + threads - 1) // threads,), (threads,),
+      (blk.indptr, indices, blk.data, cp.int64(n), cp.asarray(codes, dtype=cp.int64), cp.int64(G),
+       *out))
+    return [o.get() for o in out]
+
+
+def _group_block(blk, codes, n_groups):
+    """Per-group sums, sums of squares and stored-entry counts of one row
+    block (cupyx / scipy CSR or dense), float64."""
+    if type(blk).__module__.startswith("cupyx"):
+        return _group_block_cuda(blk, codes, n_groups)
+    if type(blk).__module__.startswith(("cupy", "cupyx")):
+        import cupy as xp
+        import cupyx.scipy.sparse as sps
+    else:
+        xp, sps = np, sp
+    codes = xp.asarray(codes)
+    n = codes.shape[0]
+    onehot = sps.csr_matrix((xp.ones(n), (codes, xp.arange(n))), shape=(n_groups, n))
+    if sps.issparse(blk):
+        blk = blk.tocsr()
+        d = blk.data.astype(xp.float64)
+        mk = lambda v: sps.csr_matrix((v, blk.indices, blk.indptr), shape=blk.shape)  # noqa: E731
+        out = [onehot @ mk(v) for v in (d, d * d, (d != 0).astype(xp.float64))]
+        out = [o.toarray() for o in out]
+    else:
+        D = xp.asarray(blk, dtype=xp.float64)
+        out = [onehot @ D, onehot @ (D * D), onehot @ (D != 0).astype(xp.float64)]
+    return [o.get() if hasattr(o, "get") and xp is not np else np.asarray(o) for o in out]
+
+
+def _group_stats_dask(X, labels):
+    """group_stats of a Dask matrix of row blocks: one pass, any device."""
+    import dask
+    groups, codes = np.unique(np.asarray(labels), return_inverse=True)
+    sizes = np.bincount(codes, minlength=len(groups)).astype(np.int64)
+    if X.numblocks[1] != 1:
+        X = X.rechunk({1: -1})
+    tasks, r = [], 0
+    for b, c in zip(X.to_delayed(optimize_graph=False).ravel(), X.chunks[0]):
+        tasks.append(dask.delayed(_group_block)(b, codes[r:r + c].astype(np.int64), len(groups)))
+        r += c
+    try:  # a distributed client schedules itself; otherwise bound the threads
+        from distributed import default_client
+        default_client()
+        kw = {}
+    except (ImportError, ValueError):
+        import os
+        kw = {"scheduler": "threads", "num_workers": int(os.environ.get("OV_DASK_WORKERS", "8"))}
+    parts = dask.compute(*tasks, **kw)
+    s, q, z = (sum(p[i] for p in parts) for i in range(3))
+    return groups, sizes, s, q, z
+
+
 def _group_stats_any(X, labels):
-    """group_stats for in-memory CSR or anndataoom lazy matrices (cached)."""
+    """group_stats for in-memory CSR, anndataoom lazy and Dask matrices (cached)."""
     from ._markers import group_stats
     from ._view import resolve, digest
     key = (id(X), digest(np.asarray(labels).astype(str)))
@@ -99,10 +196,12 @@ def _group_stats_any(X, labels):
         return hit
     v = None
     try:
-        v = resolve(X)
+        v = None if _is_dask(X) else resolve(X)
     except Exception:
         v = None
-    if v is not None and v.scale_mean is None:
+    if _is_dask(X):
+        out = _group_stats_dask(X, labels)
+    elif v is not None and v.scale_mean is None:
         from . import _core
         groups, codes = np.unique(np.asarray(labels), return_inverse=True)
         sizes = np.bincount(codes, minlength=len(groups)).astype(np.int64)

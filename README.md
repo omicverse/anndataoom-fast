@@ -67,7 +67,7 @@ through the C++ engine in place.
 | Leiden (`leiden`, RBConfiguration) | leidenalg, identical partitions |
 | Leiden, brisc flavour (`leiden_brisc`) | brisc, identical labels |
 | PaCMAP / LocalMAP (`pacmap`, `localmap`) | brisc's algorithms; PaCMAP bit-identical to brisc given the same kNN; LocalMAP identical on every machine (brisc's own LocalMAP depends on the CPU's RSQRTSS) |
-| COSG markers | omicverse, identical top-n lists |
+| COSG markers | omicverse, identical top-n lists; also streams Dask row blocks (CPU or GPU, omicverse's `ov.read(backend='dask')`) in one pass |
 | kNN | approximate (IVF), recall > 0.99; `exact=True` for brute force |
 
 ## License
