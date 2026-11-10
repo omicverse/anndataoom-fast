@@ -67,6 +67,35 @@ def test_reader_layouts(h5):
             assert np.array_equal(d.read(a, b), X.data[a:b].astype(np.float64))
 
 
+@pytest.mark.parametrize("out_dtype", [np.float32, np.float64, np.int32, np.int64])
+@pytest.mark.parametrize("n_threads", [1, 3, 8])
+def test_read_into_matches_h5py(h5, out_dtype, n_threads):
+    """read_into decodes straight into a caller buffer, converted to its
+    dtype, on any number of threads (omicverse's Dask reader)."""
+    p, X = h5
+    rng = np.random.default_rng(2)
+    with h5py.File(p) as f:
+        for key, ref in (("X/data", X.data), ("X/indices", X.indices)):
+            d = aof._h5.dataset(p, f[key])
+            for a, b in [(0, X.nnz), (5, 6), (1234, 1234)] + [
+                    tuple(sorted(rng.integers(0, X.nnz + 1, 2))) for _ in range(10)]:
+                out = np.full(b - a, -1, dtype=out_dtype)
+                d.read_into(int(a), int(b), out, n_threads)
+                assert np.array_equal(out, ref[a:b].astype(out_dtype))
+
+
+def test_read_into_rejects_bad_buffers(h5):
+    p, X = h5
+    with h5py.File(p) as f:
+        d = aof._h5.dataset(p, f["X/data"])
+    with pytest.raises(ValueError):
+        d.read_into(0, 10, np.empty(9, np.float32))
+    with pytest.raises((ValueError, TypeError)):
+        d.read_into(0, 10, np.empty(10, np.uint8))
+    with pytest.raises((IndexError, ValueError)):
+        d.read_into(0, X.nnz + 1, np.empty(X.nnz + 1, np.float32))
+
+
 def test_qc_pass_matches_numpy(h5):
     p, X = h5
     h = open_csr(p, target_block_elems=5000)

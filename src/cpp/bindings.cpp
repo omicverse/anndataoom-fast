@@ -82,6 +82,25 @@ NB_MODULE(_core, m) {
              }, "array"_a, "dtype"_a)
         .def_prop_ro("size", &Dataset::size)
         .def_prop_ro("chunked", &Dataset::chunked)
+        .def("read_into", [](const Dataset& d, int64_t e0, int64_t e1,
+                             nb::ndarray<nb::ndim<1>, nb::c_contig, nb::device::cpu> out,
+                             int n_threads) {
+            if ((int64_t)out.shape(0) != e1 - e0)
+                throw std::invalid_argument("out has the wrong length");
+            const nb::dlpack::dtype dt = out.dtype();
+            nb::gil_scoped_release g;
+            if (dt == nb::dtype<float>())
+                d.read_parallel(e0, e1, static_cast<float*>(out.data()), n_threads);
+            else if (dt == nb::dtype<double>())
+                d.read_parallel(e0, e1, static_cast<double*>(out.data()), n_threads);
+            else if (dt == nb::dtype<int32_t>())
+                d.read_parallel(e0, e1, static_cast<int32_t*>(out.data()), n_threads);
+            else if (dt == nb::dtype<int64_t>())
+                d.read_parallel(e0, e1, static_cast<int64_t*>(out.data()), n_threads);
+            else
+                throw std::invalid_argument("out must be float32, float64, int32 or int64");
+        }, "e0"_a, "e1"_a, "out"_a, "n_threads"_a = 1,
+           "Decode elements [e0, e1) into `out` (converted to its dtype) on n_threads threads.")
         .def("read", [](const Dataset& d, int64_t e0, int64_t e1) {
             std::vector<double> out((size_t)std::max<int64_t>(e1 - e0, 0));
             {

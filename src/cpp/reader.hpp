@@ -75,6 +75,12 @@ public:
     template <class T>
     void read_as(int64_t e0, int64_t e1, T* out, ReadScratch& s) const;
 
+    // Read elements [e0, e1) converted to T straight into `out`, decoding
+    // chunks (or, for contiguous data, pieces) on `n_threads` OpenMP threads
+    // with private scratch.  Same result for any thread count.
+    template <class T>
+    void read_parallel(int64_t e0, int64_t e1, T* out, int n_threads) const;
+
 private:
     void read_native(int64_t e0, int64_t e1, unsigned char* out, ReadScratch& s) const;
     void decode_chunk(int64_t c, ReadScratch& s) const;

@@ -267,9 +267,44 @@ void Dataset::read_as(int64_t e0, int64_t e1, T* out, ReadScratch& s) const {
     }
 }
 
+template <class T>
+void Dataset::read_parallel(int64_t e0, int64_t e1, T* out, int n_threads) const {
+    if (e0 < 0 || e1 > n_elems_ || e0 > e1) throw std::out_of_range("dataset range");
+    if (e0 == e1) return;
+    // Pieces: one HDF5 chunk each, or 4 Mi elements of contiguous data.
+    const int64_t piece = chunked_ ? chunk_elems_ : (int64_t)1 << 22;
+    const int64_t p0 = e0 / piece, p1 = (e1 - 1) / piece;
+    if (n_threads <= 1 || p0 == p1 || mem_) {
+        ReadScratch s;
+        read_as(e0, e1, out, s);
+        return;
+    }
+    std::string err;
+#pragma omp parallel num_threads(n_threads)
+    {
+        ReadScratch s;
+#pragma omp for schedule(dynamic, 1)
+        for (int64_t p = p0; p <= p1; ++p) {
+            const int64_t a = std::max(e0, p * piece), b = std::min(e1, (p + 1) * piece);
+            try {
+                read_as(a, b, out + (a - e0), s);
+            } catch (const std::exception& ex) {
+#pragma omp critical(aof_read_err)
+                if (err.empty()) err = ex.what();
+            }
+        }
+    }
+    if (!err.empty()) throw std::runtime_error(err);
+}
+
 template void Dataset::read_as<double>(int64_t, int64_t, double*, ReadScratch&) const;
 template void Dataset::read_as<float>(int64_t, int64_t, float*, ReadScratch&) const;
 template void Dataset::read_as<int32_t>(int64_t, int64_t, int32_t*, ReadScratch&) const;
 template void Dataset::read_as<int64_t>(int64_t, int64_t, int64_t*, ReadScratch&) const;
+
+template void Dataset::read_parallel<double>(int64_t, int64_t, double*, int) const;
+template void Dataset::read_parallel<float>(int64_t, int64_t, float*, int) const;
+template void Dataset::read_parallel<int32_t>(int64_t, int64_t, int32_t*, int) const;
+template void Dataset::read_parallel<int64_t>(int64_t, int64_t, int64_t*, int) const;
 
 }  // namespace aof
