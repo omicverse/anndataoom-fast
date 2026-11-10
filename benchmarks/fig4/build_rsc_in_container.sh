@@ -18,8 +18,9 @@ if [ ! -x $BT/bin/nvcc ]; then
 fi
 # rsc pins CMAKE_CUDA_ARCHITECTURES="native", so build with the GPU visible
 # (--nv; MPS variables passed through when set).
-apptainer exec --nv --bind /scratch,/lscratch,/tmp \
-  --env CUDA_MPS_PIPE_DIRECTORY=${CUDA_MPS_PIPE_DIRECTORY:-},CUDA_MPS_LOG_DIRECTORY=${CUDA_MPS_LOG_DIRECTORY:-} \
+MPS=()
+[ -n "${CUDA_MPS_PIPE_DIRECTORY:-}" ] && MPS=(--env CUDA_MPS_PIPE_DIRECTORY=$CUDA_MPS_PIPE_DIRECTORY,CUDA_MPS_LOG_DIRECTORY=$CUDA_MPS_LOG_DIRECTORY)
+apptainer exec --nv --bind /scratch,/lscratch,/tmp ${MPS[@]+"${MPS[@]}"} \
   --env PATH=$BT/bin:/opt/conda/bin:/usr/local/bin:/usr/bin:/bin \
   --env CC=$BT/bin/x86_64-conda-linux-gnu-gcc,CXX=$BT/bin/x86_64-conda-linux-gnu-g++,CUDACXX=$BT/bin/nvcc,CUDAHOSTCXX=$BT/bin/x86_64-conda-linux-gnu-g++,CUDAToolkit_ROOT=$BT \
   --env PIP_CACHE_DIR=$L_SCRATCH/pip_cache,CMAKE_BUILD_PARALLEL_LEVEL=16 \

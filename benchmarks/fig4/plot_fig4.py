@@ -17,9 +17,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
-COLORS = {"brisc": "#e16032", "omicverse-cpp": "#7058be", "omicverse-python": "#269d69"}
-LABELS = {"brisc": "brisc", "omicverse-cpp": "omicverse (backend='cpp')",
-          "omicverse-python": "omicverse (backend='python')"}
+COLORS = {"brisc": "#e16032", "omicverse-cpp": "#7058be", "omicverse-mixed": "#c2185b",
+          "omicverse-dask": "#2e7d32", "omicverse-gpu": "#f0a202", "omicverse-python": "#9e9e9e",
+          # values reported in the brisc paper (different hardware)
+          "brisc (paper)": "#e16032", "brisc single-threaded (paper)": "#f38d70",
+          "Scanpy (paper)": "#269d69", "Seurat + BPCells (paper)": "#1c8ca8",
+          "brisc on GPU node (paper)": "#e16032", "rapids-singlecell (paper)": "#7058be"}
+LABELS = {"brisc": "brisc (whole matrix in RAM)",
+          "omicverse-cpp": "omicverse cpu, storage='disk'\n(backend='cpp', default)",
+          "omicverse-mixed": "omicverse cpu-gpu-mixed, storage='disk'\n(PCA/kNN/UMAP on the GPU)",
+          "omicverse-dask": "omicverse gpu, storage='disk'\n(row blocks streamed to the GPU)",
+          "omicverse-gpu": "omicverse gpu, storage='memory'\n(whole matrix in RAM, RAPIDS)",
+          "omicverse-python": "omicverse cpu, storage='disk'\n(backend='python')"}
 OPS = ["Load data", "Quality control", "Normalization + feature selection", "PCA",
        "Nearest neighbors", "Clustering", "Embedding (LocalMAP)", "Embedding (UMAP)",
        "Find markers", "Total"]
@@ -41,6 +50,8 @@ def fmt_time(s):
 
 def load(results, dataset):
     df = pd.concat([pd.read_csv(f) for f in glob.glob(os.path.join(results, f"{dataset}_*.csv"))])
+    if "rep" not in df:  # e.g. values transcribed from the brisc paper
+        df["rep"] = 1
     df["operation"] = df["operation"].replace({"Normalization": "Normalization + feature selection",
                                                "Feature selection": "Normalization + feature selection"})
     g = df.groupby(["library", "rep", "operation"], as_index=False).agg(
@@ -64,12 +75,21 @@ def main():
     ap.add_argument("dataset")
     ap.add_argument("out")
     ap.add_argument("--title", default=None)
+    ap.add_argument("--no-mult", action="store_true",
+                    help="label bars with times only (e.g. rounded values transcribed from a paper)")
+    ap.add_argument("--footnote", default=None, help="text under the legend (hardware etc.)")
+    ap.add_argument("--ref", default="brisc", help="library the multipliers are relative to")
+    ap.add_argument("--libs", default=None, help="comma-separated libraries to draw, in order")
     ap.add_argument("--note", action="append", default=[],
                     help="LIBRARY:OPERATION:TEXT shown in place of a missing bar, "
                          "e.g. 'omicverse-python:Find markers:out of memory (256 GB)'")
     a = ap.parse_args()
     d = load(a.results, a.dataset)
     libs = [l for l in COLORS if l in set(d["library"])]
+    if a.libs:
+        noted = {n.split(":", 1)[0] for n in a.note}  # a failed run keeps its row
+        libs = [l for l in a.libs.split(",") if l in set(d["library"]) | noted]
+    d = d[d["library"].isin(libs)]  # axes and totals from the drawn libraries only
     notes = {}
     for n in a.note:
         lib, op, text = n.split(":", 2)
@@ -81,15 +101,15 @@ def main():
     fig, axes = plt.subplots(len(ops), 2, figsize=(7.2, 0.62 * len(ops) * len(libs) / 3 + 1.2),
                              gridspec_kw={"width_ratios": [4, 1.3], "wspace": 0.04, "hspace": 0.0},
                              squeeze=False)
-    mem_max = d["memory"].max()
+    mem_max = d["memory"].max() if d["memory"].notna().any() else 1.0
     for i, op in enumerate(ops):
         ax, axm = axes[i]
         sub = d[d["operation"] == op].set_index("library")
-        ref = sub["duration"].get(REF)
+        ref = sub["duration"].get(a.ref)
         vmax = sub["duration"].max()
         for j, lib in enumerate(reversed(libs)):
             if lib not in sub.index:
-                ax.text(vmax * 0.01, j, notes.get((lib, op), "not available"), va="center",
+                ax.text(vmax * 0.01, j, notes.get((lib, op), notes.get((lib, "*"), "not available")), va="center",
                         ha="left", fontsize=7.5, color="#555555", style="italic")
                 continue
             t, m = sub.at[lib, "duration"], sub.at[lib, "memory"]
@@ -100,13 +120,16 @@ def main():
                 missing = expected - done - {"Embedding (LocalMAP)", "Embedding (UMAP)"}
                 if missing:
                     lab = "> " + lab + " (incomplete)"
-            if ref is not None and lib != REF and ref > 0:
+            if ref is not None and lib != a.ref and ref > 0 and not a.no_mult:
                 mult = t / ref
                 lab += f" ({mult:.1f}x)" if mult < 10 else f" ({mult:.0f}x)"
             ax.text(max(t, vmax * 0.02) + vmax * 0.03, j, lab, va="center", ha="left", fontsize=7.5)
-            axm.barh(j, m, height=0.8, color="#d9d9d9")
-            axm.text(mem_max * 0.08, j, f"{m:.0f} GB" if m >= 1 else f"{m:.1f} GB",
-                     va="center", ha="left", fontsize=7.5)
+            if pd.isna(m):
+                axm.text(mem_max * 0.08, j, "n/a", va="center", ha="left", fontsize=7.5, color="#555555")
+            else:
+                axm.barh(j, m, height=0.8, color="#d9d9d9")
+                axm.text(mem_max * 0.08, j, f"{m:.0f} GB" if m >= 1 else f"{m:.1f} GB",
+                         va="center", ha="left", fontsize=7.5)
         ax.set_xlim(0, vmax * 1.75)
         axm.set_xlim(0, mem_max * 1.5)
         for x in (ax, axm):
@@ -120,8 +143,14 @@ def main():
     if a.title:
         fig.suptitle(a.title, fontsize=11, y=0.995)
     handles = [plt.Rectangle((0, 0), 1, 1, color=COLORS[l]) for l in libs]
-    fig.legend(handles, [LABELS[l] for l in libs], loc="lower center", ncol=len(libs),
-               frameon=False, bbox_to_anchor=(0.55, -0.02), fontsize=8.5)
+    labels = [LABELS.get(l, l) for l in libs]
+    ncol = 3 if any("\n" in t for t in labels) else len(libs)
+    nrows = -(-len(libs) // ncol)
+    fig.legend(handles, labels, loc="upper center", ncol=ncol, frameon=False,
+               bbox_to_anchor=(0.55, 0.03), fontsize=8.5)
+    if a.footnote:
+        fig.text(0.55, 0.03 - 0.035 * nrows * (2 if ncol < len(libs) else 1) - 0.01, a.footnote, ha="center", va="top", fontsize=7.5, color="#333333",
+                 wrap=True)
     fig.subplots_adjust(left=0.22, right=0.98, top=0.95, bottom=0.12)
     for ext in ("png", "pdf"):
         fig.savefig(f"{a.out}.{ext}", dpi=200, bbox_inches="tight")

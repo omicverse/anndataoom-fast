@@ -23,18 +23,19 @@ ap.add_argument("num_threads", type=int)
 ap.add_argument("out_csv")
 ap.add_argument("rep", type=int)
 ap.add_argument("--backend", choices=["cpp", "python"], required=True)
-ap.add_argument("--mode", choices=["cpu", "mixed", "gpu"], default="cpu",
+ap.add_argument("--mode", choices=["cpu", "mixed", "gpu", "dask"], default="cpu",
                 help="omicverse settings mode: cpu; mixed = CPU preprocessing (out of core) "
-                     "with PCA/neighbors/UMAP/Leiden on the GPU; gpu = RAPIDS, data in GPU memory")
+                     "with PCA/neighbors/UMAP/Leiden on the GPU; gpu = RAPIDS, data in GPU memory; "
+                     "dask = GPU mode on row blocks streamed from disk (ov.read(storage='disk'))")
+ap.add_argument("--chunk-size", type=int, default=20000, help="cells per block (--mode dask)")
 ap.add_argument("--groupby", default="cell_type")
 a = ap.parse_args()
 
 if __name__ == "__main__":
     system_info()
-    import anndataoom as oom
     import omicverse as ov
     import omicverse.single  # noqa: F401
-    if a.mode == "gpu":
+    if a.mode in ("gpu", "dask"):
         ov.settings.gpu_init()
     elif a.mode == "mixed":
         ov.settings.cpu_gpu_mixed_init()
@@ -50,13 +51,16 @@ if __name__ == "__main__":
                                       "dataset": a.data_name, "num_threads": a.num_threads,
                                       "rep": a.rep})
     with timers("Load data"):
+        # storage='disk' keeps the matrix on disk: anndataoom in cpu/mixed
+        # mode, Dask row blocks streamed to the GPU in gpu mode ("dask").
+        # "gpu" is the in-memory RAPIDS path (storage='memory').
         if a.mode == "gpu":
-            # RAPIDS needs the whole matrix in (GPU) memory.
-            import anndata
-            adata = anndata.read_h5ad(a.data_path)
+            adata = ov.read(a.data_path, storage="memory")
             ov.pp.anndata_to_GPU(adata)
+        elif a.mode == "dask":
+            adata = ov.read(a.data_path, storage="disk", chunk_size=a.chunk_size)
         else:
-            adata = oom.read(a.data_path)
+            adata = ov.read(a.data_path, storage="disk")
     with timers("Quality control"):
         out = ov.pp.qc(adata, mode="seurat", doublets=False)
         adata = adata if out is None else out
@@ -74,7 +78,7 @@ if __name__ == "__main__":
         # backend='cpp'; the GPU modes run them one after another).
         kw = {"n_iterations": 2} if a.mode == "cpu" else {}
         ov.pp.leiden(adata, resolution=[0.25, 0.5, 1.0, 1.5, 2.0], key_added="leiden", **kw)
-    if a.backend == "cpp" and a.mode != "gpu":
+    if a.backend == "cpp" and a.mode not in ("gpu", "dask"):
         with timers("Embedding (LocalMAP)"):
             ov.pp.localmap(adata, use_rep="scaled|original|X_pca")
     with timers("Embedding (UMAP)"):
