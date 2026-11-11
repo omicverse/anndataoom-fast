@@ -210,8 +210,12 @@ def chunked_normalize_total(adata, *, target_sum=None, exclude_highly_expressed=
     col_map = v.col_map()
     excl = np.zeros(v.handle.shape[1], dtype=np.uint8)
     sums_genes = sq_sums_genes = None
+    # Pearson residuals use each cell's total over *all* genes, also when the
+    # size factors leave the highly expressed ones out.
+    full_rows = None
     if exclude_highly_expressed:
         hi = _core.hi_pass(v.handle.src, v.row_keep, v.col_keep(), float(max_fraction))
+        full_rows = np.ascontiguousarray(hi["rowsum"], dtype=np.float64)
         hi_count = v.from_orig_cols(hi["hi_count"])
         sums_genes = v.from_orig_cols(hi["g_sum"])
         sq_sums_genes = v.from_orig_cols(hi["g_sumsq"])
@@ -233,8 +237,10 @@ def chunked_normalize_total(adata, *, target_sum=None, exclude_highly_expressed=
         v.handle.src, v.row_keep, col_map, excl,
         np.ascontiguousarray(sums_genes if speculate_pearson else np.zeros(n_vars)),
         float(target_sum) if target_sum is not None else 1.0,
-        True, speculate_scale, speculate_pearson, theta, clip, sum_total)
+        True, speculate_scale, speculate_pearson, theta, clip, sum_total,
+        cells_override=full_rows)
     counts_per_cell = v.from_orig_rows(st["cps"]).astype(np.float64)
+    pearson_cells = counts_per_cell if full_rows is None else v.from_orig_rows(full_rows)
     if sums_genes is None:
         sums_genes = v.from_orig_cols(st["g_sum"])
         sq_sums_genes = v.from_orig_cols(st["g_sumsq"])
@@ -247,7 +253,7 @@ def chunked_normalize_total(adata, *, target_sum=None, exclude_highly_expressed=
     norm_factors[norm_factors == 0] = 1.0
     adata.obs["_norm_factor"] = norm_factors
     adata.uns["_pearson_precompute"] = {
-        "sums_cells": counts_per_cell.copy(),
+        "sums_cells": np.array(pearson_cells, dtype=np.float64),
         "sums_genes": sums_genes,
         "sq_sums_genes": sq_sums_genes,
         "sum_total": float(sums_genes.sum()),
@@ -260,7 +266,7 @@ def chunked_normalize_total(adata, *, target_sum=None, exclude_highly_expressed=
         _remember(_scale_key(v, norm_factors, True),
                   {"s1": st["s1"], "s2": st["s2"], "n": n_obs})
     if speculate_pearson:
-        _remember(_pearson_key(v, counts_per_cell, sums_genes, sum_total, theta, clip),
+        _remember(_pearson_key(v, pearson_cells, sums_genes, sum_total, theta, clip),
                   {"d1": st["d1"], "d2": st["d2"]})
 
 
