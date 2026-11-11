@@ -50,13 +50,18 @@ def _patched_simplicial_set_embedding(data, graph, n_components, initial_alpha, 
                                       metric_kwds, densmap, densmap_kwds, output_dens,
                                       output_metric=None, output_metric_kwds=None,
                                       euclidean_output=True, parallel=False, verbose=False,
-                                      tqdm_kwds=None):
-    if densmap or output_dens or not euclidean_output:
+                                      tqdm_kwds=None, **kwargs):
+    # umap-learn >= 0.6 adds layout options; anything but its legacy (0.5.x)
+    # layout goes back to umap-learn.
+    new_layout = (kwargs.get("compatibility_layout") is False
+                  or kwargs.get("optimizer") not in (None, "compatibility"))
+    if densmap or output_dens or not euclidean_output or new_layout:
         return _ORIG["simplicial_set_embedding"](
             data, graph, n_components, initial_alpha, a, b, gamma, negative_sample_rate,
             n_epochs, init, random_state, metric, metric_kwds, densmap, densmap_kwds,
             output_dens, **({} if output_metric is None else {"output_metric": output_metric}),
-            euclidean_output=euclidean_output, parallel=parallel, verbose=verbose)
+            euclidean_output=euclidean_output, parallel=parallel, verbose=verbose,
+            **({} if tqdm_kwds is None else {"tqdm_kwds": tqdm_kwds}), **kwargs)
     from ._umap import simplicial_set_embedding
     emb = simplicial_set_embedding(graph, n_components, a=a, b=b, n_epochs=n_epochs, init=init,
                                    random_state=random_state, gamma=gamma,

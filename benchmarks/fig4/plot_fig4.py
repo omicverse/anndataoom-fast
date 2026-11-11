@@ -28,7 +28,8 @@ LABELS = {"brisc": "brisc (whole matrix in RAM)",
           "omicverse-mixed": "omicverse cpu-gpu-mixed, storage='disk'\n(PCA/kNN/UMAP on the GPU)",
           "omicverse-dask": "omicverse gpu, storage='disk'\n(row blocks streamed to the GPU)",
           "omicverse-gpu": "omicverse gpu, storage='memory'\n(whole matrix in RAM, RAPIDS)",
-          "omicverse-python": "omicverse cpu, storage='disk'\n(backend='python')"}
+          "omicverse-python": "omicverse cpu, storage='disk'\n(backend='python')",
+          "Scanpy (paper)": "Scanpy (brisc paper's numbers,\n192-core node; not run here)"}
 OPS = ["Load data", "Quality control", "Normalization + feature selection", "PCA",
        "Nearest neighbors", "Clustering", "Embedding (LocalMAP)", "Embedding (UMAP)",
        "Find markers", "Total"]
@@ -50,8 +51,8 @@ def fmt_time(s):
 
 def load(results, dataset):
     df = pd.concat([pd.read_csv(f) for f in glob.glob(os.path.join(results, f"{dataset}_*.csv"))])
-    if "rep" not in df:  # e.g. values transcribed from the brisc paper
-        df["rep"] = 1
+    # values transcribed from the brisc paper have no rep column
+    df["rep"] = df["rep"].fillna(1) if "rep" in df else 1
     df["operation"] = df["operation"].replace({"Normalization": "Normalization + feature selection",
                                                "Feature selection": "Normalization + feature selection"})
     g = df.groupby(["library", "rep", "operation"], as_index=False).agg(

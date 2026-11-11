@@ -234,3 +234,40 @@ def test_orthonormalize_and_svd_deterministic(h5):
     np.testing.assert_allclose(S, Ss, rtol=1e-7)
     cos = np.abs((U * Us).sum(0)) / (np.linalg.norm(U, axis=0) * np.linalg.norm(Us, axis=0))
     assert cos.min() > 1 - 1e-6
+
+
+def _hi_expressed_h5ad(tmp_path):
+    """Counts where gene 0 dominates many cells, so exclude_highly_expressed
+    drops it from the size factors."""
+    import anndata as ad
+    rng = np.random.default_rng(11)
+    n, g = 1500, 200
+    lam = rng.gamma(0.5, 2.0, size=g) * rng.lognormal(0, 0.5, size=(n, 1))
+    lam[:, 0] *= 60
+    X = sp.csr_matrix(rng.poisson(lam).astype(np.float32))
+    a = ad.AnnData(X)
+    a.obs_names = [f"c{i}" for i in range(n)]
+    a.var_names = [f"g{j}" for j in range(g)]
+    p = str(tmp_path / "hi.h5ad")
+    a.write_h5ad(p)
+    return p, a
+
+
+def test_pearson_hvg_after_exclude_highly_expressed_matches_scanpy(tmp_path):
+    """Pearson residuals use each cell's total over all genes even when the
+    size factors exclude the highly expressed ones (regression: the excluded
+    totals leaked into the HVG precompute)."""
+    anndataoom = pytest.importorskip("anndataoom")
+    import scanpy as sc
+    from anndataoom_fast import oom
+    p, ref = _hi_expressed_h5ad(tmp_path)
+    a = anndataoom.read(p)
+    try:
+        oom.chunked_normalize_total(a, target_sum=1e4, exclude_highly_expressed=True,
+                                    max_fraction=0.05)
+        oom.chunked_highly_variable_genes_pearson(a, layer="counts", n_top_genes=50)
+        got = np.asarray(a.var["residual_variances"])
+    finally:
+        a.close()
+    sc.experimental.pp.highly_variable_genes(ref, flavor="pearson_residuals", n_top_genes=50)
+    np.testing.assert_allclose(got, ref.var["residual_variances"].values, rtol=1e-6)
