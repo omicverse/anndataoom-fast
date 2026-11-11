@@ -63,8 +63,12 @@ def test_umap_first_epoch_matches_umap_learn_and_is_deterministic():
     init = rs.uniform(0, 10, size=(G.shape[0], 2)).astype(np.float32)
     eps = umap_.make_epochs_per_sample(G.data, 20)
     rng = rs.randint(-2 ** 31 + 1, 2 ** 31 - 2, 3).astype(np.int64)
+    import inspect
+    legacy = ({"optimizer": "compatibility"}  # umap-learn >= 0.6: the 0.5.x algorithm
+              if "optimizer" in inspect.signature(optimize_layout_euclidean).parameters else {})
     e1 = optimize_layout_euclidean(init.copy(), init.copy(), G.row, G.col, 1, G.shape[1], eps, a, b,
-                                   rng.copy(), 1.0, 1.0, 5, parallel=False, move_other=True)
+                                   rng.copy(), 1.0, 1.0, 5, parallel=False, move_other=True,
+                                   **legacy)
     e2 = init.copy()
     _core.umap_optimize_euclidean(e2, G.row.astype(np.int32), G.col.astype(np.int32), eps,
                                   rng.copy(), a, b, 1.0, 1.0, 5.0, 1, True, False)
