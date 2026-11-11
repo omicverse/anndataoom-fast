@@ -306,6 +306,7 @@ def read_csr(path, key="X", n_threads=None):
     from ._h5 import dataset
     from . import get_num_threads
     nt = int(n_threads or get_num_threads())
+    path = str(path)
     with h5py.File(path, "r") as f:
         g = f[key]
         enc = g.attrs.get("encoding-type", b"")
