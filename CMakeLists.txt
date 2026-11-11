@@ -59,7 +59,8 @@ nanobind_add_module(_core NB_STATIC
   src/cpp/knn.cpp
   src/cpp/fuzzy.cpp
   src/cpp/umap.cpp
-  src/cpp/groupstats.cpp)
+  src/cpp/groupstats.cpp
+  src/cpp/subset.cpp)
 target_link_libraries(_core PRIVATE aof_deflate aof_openmp)
 target_compile_options(_core PRIVATE ${AOF_FP_FLAGS})
 if(AOF_NATIVE AND NOT MSVC)
