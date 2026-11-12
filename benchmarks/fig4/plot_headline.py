@@ -27,6 +27,8 @@ CPU = [("omicverse[cpu]", "#7058be"), ("brisc", "#e16032"), ("Scanpy", "#269d69"
        ("Seurat + BPCells", "#4698cc"), ("Seurat v6", "#4698cc")]
 GPU = [("omicverse[gpu]", "#7058be"), ("omicverse[mixed]", "#7058be"),
        ("rapids-singlecell", "#c2185b")]
+GROUPS = {"CPU": "CPU · 64 threads", "GPU": "GPU · 1× H100 + 16 threads"}
+PAPER = {"Scanpy", "Seurat + BPCells", "rapids-singlecell"}  # numbers from the brisc paper
 GAP = 0.6  # extra space between the CPU and GPU groups
 HEAD = 0.8  # space for a group header above each group
 EMBED_UMAP = "Embedding (UMAP)"
@@ -97,7 +99,8 @@ def draw(vals, theme, out):
     axt.set_xlim(10, tmax * 25)
     axm.set_xlim(0, mmax * 1.25)
     axt.set_yticks([y for _, _, y in rows])
-    axt.set_yticklabels([lib for lib, _, _ in rows], color=th["ink"], fontsize=10.5)
+    axt.set_yticklabels([lib + ("*" if lib in PAPER else "") for lib, _, _ in rows],
+                        color=th["ink"], fontsize=10.5)
     axt.set_ylim(ymax + 0.5, -0.5 + HEAD - 0.9)
     for ax, title in ((axt, "Runtime (log scale)"), (axm, "Peak memory")):
         ax.set_facecolor("none")
@@ -112,10 +115,11 @@ def draw(vals, theme, out):
     y_fig = fig.transFigure.inverted().transform(axt.transData.transform((1, ysep)))[1]
     fig.add_artist(plt.Line2D([0.0, 0.98], [y_fig, y_fig], color=th["muted"], linewidth=0.8,
                               linestyle=(0, (4, 3)), transform=fig.transFigure))
-    for label, y in (("CPU", HEAD - 0.95), ("GPU", y_gpu - 0.95)):
+    for label, y in ((GROUPS["CPU"], HEAD - 0.95), (GROUPS["GPU"], y_gpu - 0.95)):
         axt.text(-0.015, y, label, transform=axt.get_yaxis_transform(), ha="right",
                  va="center", color=th["muted"], fontsize=9, fontweight="bold")
-    fig.text(0.0, 0.0, "SEA-AD, 1.38M cells · full scRNA-seq workflow", color=th["muted"],
+    fig.text(0.0, 0.0, "SEA-AD, 1.38M cells · full scRNA-seq workflow · "
+             "* brisc paper: 192-core node; rapids-singlecell on 4× H100", color=th["muted"],
              fontsize=8.5, va="top")
     # dark: transparent, so it sits on any dark page (GitHub, omicverse.org tiles)
     fig.savefig(f"{out}_{theme}.png", dpi=200, bbox_inches="tight",
