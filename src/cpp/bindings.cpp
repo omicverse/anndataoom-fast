@@ -12,6 +12,7 @@
 #include "fuzzy.hpp"
 #include "umap.hpp"
 #include "groupstats.hpp"
+#include "subset.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -360,6 +361,92 @@ NB_MODULE(_core, m) {
         }
         return np(std::move(y));
     }, "indptr"_a, "indices"_a, "data"_a, "x"_a);
+
+    // ---- CSR row/column subset (two parallel passes) -----------------------
+    using Arr1 = nb::ndarray<nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+    using RoArr1 = nb::ndarray<nb::ro, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+    m.def("csr_subset_count", [](In1<int64_t> indptr, RoArr1 indices, In1<int64_t> rows,
+                                 In1<int32_t> col_map) {
+        const int64_t n_out = rows.shape(0) ? (int64_t)rows.shape(0) : (int64_t)indptr.shape(0) - 1;
+        std::vector<int64_t> out((size_t)n_out + 1);
+        const int64_t* rp = rows.shape(0) ? rows.data() : nullptr;
+        const int32_t* cm = col_map.shape(0) ? col_map.data() : nullptr;
+        const auto dt = indices.dtype();
+        {
+            nb::gil_scoped_release g;
+            if (dt == nb::dtype<int32_t>())
+                csr_subset_count(indptr.data(), static_cast<const int32_t*>(indices.data()), rp, n_out, cm, out.data());
+            else if (dt == nb::dtype<int64_t>())
+                csr_subset_count(indptr.data(), static_cast<const int64_t*>(indices.data()), rp, n_out, cm, out.data());
+            else
+                throw std::invalid_argument("indices must be int32 or int64");
+        }
+        return np(std::move(out));
+    }, "indptr"_a, "indices"_a, "rows"_a, "col_map"_a);
+
+    m.def("csr_subset_fill", [](In1<int64_t> indptr, RoArr1 indices, RoArr1 data, In1<int64_t> rows,
+                                In1<int32_t> col_map, In1<int64_t> out_indptr, Arr1 out_indices,
+                                Arr1 out_data) {
+        const int64_t n_out = (int64_t)out_indptr.shape(0) - 1;
+        const int64_t* rp = rows.shape(0) ? rows.data() : nullptr;
+        const int32_t* cm = col_map.shape(0) ? col_map.data() : nullptr;
+        if ((int64_t)out_indices.shape(0) != out_indptr.data()[n_out] ||
+            out_data.shape(0) != out_indices.shape(0) || out_data.dtype() != data.dtype())
+            throw std::invalid_argument("output buffers do not match out_indptr / data");
+        const auto di = indices.dtype(), dv = data.dtype(), dj = out_indices.dtype();
+        nb::gil_scoped_release g;
+        auto go = [&](auto itag, auto vtag, auto jtag) {
+            using I = decltype(itag); using V = decltype(vtag); using J = decltype(jtag);
+            csr_subset_fill(indptr.data(), static_cast<const I*>(indices.data()),
+                            static_cast<const V*>(data.data()), rp, n_out, cm, out_indptr.data(),
+                            static_cast<J*>(out_indices.data()), static_cast<V*>(out_data.data()));
+        };
+        auto with_j = [&](auto itag, auto vtag) {
+            if (dj == nb::dtype<int32_t>()) go(itag, vtag, int32_t{});
+            else if (dj == nb::dtype<int64_t>()) go(itag, vtag, int64_t{});
+            else throw std::invalid_argument("out_indices must be int32 or int64");
+        };
+        auto with_v = [&](auto itag) {
+            if (dv == nb::dtype<float>()) with_j(itag, float{});
+            else if (dv == nb::dtype<double>()) with_j(itag, double{});
+            else throw std::invalid_argument("data must be float32 or float64");
+        };
+        if (di == nb::dtype<int32_t>()) with_v(int32_t{});
+        else if (di == nb::dtype<int64_t>()) with_v(int64_t{});
+        else throw std::invalid_argument("indices must be int32 or int64");
+    }, "indptr"_a, "indices"_a, "data"_a, "rows"_a, "col_map"_a, "out_indptr"_a,
+       "out_indices"_a, "out_data"_a);
+
+    m.def("csr_scale_rows", [](In1<int64_t> indptr, RoArr1 data, In1<double> f, bool divide,
+                               Arr1 out) {
+        const int64_t n = (int64_t)indptr.shape(0) - 1;
+        if ((int64_t)f.shape(0) != n || out.shape(0) != data.shape(0))
+            throw std::invalid_argument("factor / output length mismatch");
+        const auto dv = data.dtype(), dout = out.dtype();
+        nb::gil_scoped_release g;
+        if (dv == nb::dtype<float>() && dout == nb::dtype<float>())
+            csr_scale_rows(indptr.data(), n, static_cast<const float*>(data.data()), f.data(), divide,
+                           static_cast<float*>(out.data()));
+        else if (dv == nb::dtype<float>() && dout == nb::dtype<double>())
+            csr_scale_rows(indptr.data(), n, static_cast<const float*>(data.data()), f.data(), divide,
+                           static_cast<double*>(out.data()));
+        else if (dv == nb::dtype<double>() && dout == nb::dtype<double>())
+            csr_scale_rows(indptr.data(), n, static_cast<const double*>(data.data()), f.data(), divide,
+                           static_cast<double*>(out.data()));
+        else
+            throw std::invalid_argument("unsupported data / output dtypes");
+    }, "indptr"_a, "data"_a, "factors"_a, "divide"_a, "out"_a);
+
+    m.def("all_nonnegative_integers", [](RoArr1 data) {
+        const auto dv = data.dtype();
+        const int64_t n = (int64_t)data.shape(0);
+        nb::gil_scoped_release g;
+        if (dv == nb::dtype<float>())
+            return all_nonnegative_integers(static_cast<const float*>(data.data()), n);
+        if (dv == nb::dtype<double>())
+            return all_nonnegative_integers(static_cast<const double*>(data.data()), n);
+        throw std::invalid_argument("data must be float32 or float64");
+    }, "data"_a);
 
     m.def("scale_dense", [](const CSRSource& src, In1<uint8_t> row_keep, In1<int32_t> col_map,
                             In1<double> mean, In1<double> sd, double clip,
