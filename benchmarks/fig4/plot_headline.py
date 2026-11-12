@@ -73,8 +73,8 @@ def draw(vals, theme, out):
     fig.text(0.0, 0.0, "SEA-AD, 1.38M cells · full scRNA-seq workflow", color=th["muted"],
              fontsize=8.5, va="top")
     # dark: transparent, so it sits on any dark page (GitHub, omicverse.org tiles)
-    fig.savefig(f"{out}_{theme}.png", dpi=200, bbox_inches="tight", facecolor=th["bg"],
-                transparent=theme == "dark")
+    fig.savefig(f"{out}_{theme}.png", dpi=200, bbox_inches="tight",
+                facecolor="none" if theme == "dark" else th["bg"])
     plt.close(fig)
 
 
