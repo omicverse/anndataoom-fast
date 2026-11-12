@@ -1,8 +1,8 @@
-"""Headline figure for the READMEs: total runtime and peak memory of the
+"""Headline figure for the READMEs (light and dark): total runtime and peak memory of the
 standard Fig. 4 workflow on SEA-AD (1.38M cells) for omicverse, brisc, Scanpy
 and Seurat + BPCells.
 
-    python plot_headline.py RESULTS_DIR OUT
+    python plot_headline.py RESULTS_DIR OUT   # writes OUT_light.png, OUT_dark.png
 
 omicverse and brisc: our runs on the same AMD EPYC 9754 node, each at its
 fastest thread count (RESULTS_DIR/cpu128/SEAAD_{ovcpp,brisc}_t*.csv).
@@ -15,11 +15,9 @@ import os
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from plot_fig4 import fmt_time
-
-# validated categorical order (validate_palette.js, light surface, all pairs)
+# validated categorical order (validate_palette.js, light and dark surfaces, all pairs)
 ROWS = [("omicverse", "#7058be"), ("brisc", "#e16032"), ("Scanpy", "#269d69"),
-        ("Seurat + BPCells", "#4a9fd0")]
+        ("Seurat", "#4698cc")]
 EMBED_UMAP = "Embedding (UMAP)"
 
 
@@ -40,61 +38,56 @@ def paper(results, lib):
     return d.duration.sum(), d.memory.max()
 
 
+THEMES = {"light": {"bg": "#ffffff", "ink": "#1f2328", "muted": "#8c959f"},
+          "dark": {"bg": "#0d1117", "ink": "#e6edf3", "muted": "#7d8590"}}
+
+
+def draw(vals, theme, out):
+    th = THEMES[theme]
+    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10})
+    fig, (axt, axm) = plt.subplots(1, 2, figsize=(8, 2.6), sharey=True,
+                                   gridspec_kw={"wspace": 0.12})
+    fig.patch.set_facecolor(th["bg"])
+    tmax = max(v[0] for v in vals.values())
+    mmax = max(v[1] for v in vals.values())
+    for i, (lib, col) in enumerate(ROWS):
+        t, m = vals[lib]
+        axt.barh(i, t, color=col, height=0.6)
+        axt.text(t * 1.15, i, f"{t:.0f} s" if t < 100 else f"{t / 3600:.1f} h", va="center",
+                 color=th["ink"], fontsize=9.5)
+        axm.barh(i, m, color=col, height=0.6)
+        axm.text(m + mmax * 0.03, i, f"{m:.3g} GB", va="center", color=th["ink"], fontsize=9.5)
+    axt.set_xscale("log")
+    axt.set_xlim(10, tmax * 8)
+    axm.set_xlim(0, mmax * 1.25)
+    axt.set_yticks(range(len(ROWS)))
+    axt.set_yticklabels([lib for lib, _ in ROWS], color=th["ink"], fontsize=10.5)
+    axt.set_ylim(len(ROWS) - 0.5, -0.5)
+    for ax, title in ((axt, "Runtime (log scale)"), (axm, "Peak memory")):
+        ax.set_facecolor(th["bg"])
+        ax.set_title(title, loc="left", color=th["ink"], fontsize=11, fontweight="bold")
+        ax.set_xticks([])
+        ax.set_xticks([], minor=True)
+        ax.tick_params(axis="y", length=0)
+        for sp in ax.spines.values():
+            sp.set_visible(False)
+    fig.text(0.0, 0.0, "SEA-AD, 1.38M cells · full scRNA-seq workflow", color=th["muted"],
+             fontsize=8.5, va="top")
+    fig.savefig(f"{out}_{theme}.png", dpi=200, bbox_inches="tight", facecolor=th["bg"])
+    plt.close(fig)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("results")
     ap.add_argument("out")
     a = ap.parse_args()
-
-    ov, br = fastest(a.results, "ovcpp"), fastest(a.results, "brisc")
-    vals = {"omicverse": ov[:2], "brisc": br[:2],
+    vals = {"omicverse": fastest(a.results, "ovcpp")[:2],
+            "brisc": fastest(a.results, "brisc")[:2],
             "Scanpy": paper(a.results, "Scanpy"),
-            "Seurat + BPCells": paper(a.results, "Seurat + BPCells")}
-    sub = {"omicverse": f"2.4.2, {ov[2]} threads, storage='disk'",
-           "brisc": f"{br[2]} threads, whole matrix in RAM",
-           "Scanpy": "from the brisc paper (192-core node)",
-           "Seurat + BPCells": "from the brisc paper (192-core node)"}
-
-    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 9})
-    fig, (axt, axm) = plt.subplots(1, 2, figsize=(9, 2.9), sharey=True,
-                                   gridspec_kw={"wspace": 0.08})
-    y = range(len(ROWS))
-    tmax = max(v[0] for v in vals.values())
-    mmax = max(v[1] for v in vals.values())
-    for i, (lib, col) in enumerate(ROWS):
-        t, m = vals[lib]
-        axt.barh(i, t, color=col, height=0.62)
-        axt.text(t * 1.12, i, f"{t:.1f} s" if t < 100 else fmt_time(t), va="center", fontsize=8.5, color="#222222")
-        axm.barh(i, m, color=col, height=0.62)
-        axm.text(m + mmax * 0.02, i, f"{m:.1f} GB" if m < 20 else f"{m:.0f} GB", va="center", fontsize=8.5, color="#222222")
-    axt.set_xscale("log")
-    axt.set_xlim(10, tmax * 6)
-    axm.set_xlim(0, mmax * 1.18)
-    axt.set_yticks(list(y))
-    axt.set_yticklabels([f"{lib}\n{sub[lib]}" for lib, _ in ROWS], fontsize=8)
-    for t in axt.get_yticklabels():
-        t.set_linespacing(1.3)
-    axt.set_ylim(len(ROWS) - 0.5, -0.5)
-    for ax, title, xl in ((axt, "Total runtime (lower is better)", "seconds, log scale"),
-                          (axm, "Peak memory (lower is better)", "GB")):
-        ax.set_title(title, fontsize=9.5, loc="left")
-        ax.set_xlabel(xl, fontsize=8, color="#555555")
-        ax.tick_params(axis="x", labelsize=7.5, colors="#555555")
-        ax.tick_params(axis="y", length=0)
-        ax.grid(axis="x", color="#e6e6e6", linewidth=0.6)
-        ax.set_axisbelow(True)
-        for s in ("top", "right", "left"):
-            ax.spines[s].set_visible(False)
-        ax.spines["bottom"].set_color("#bbbbbb")
-    fig.text(0.0, -0.06,
-             "SEA-AD MTG, 1.38M cells × 36,601 genes; brisc Fig. 4 workflow (load, QC, normalize + HVG, "
-             "PCA, kNN, Leiden ×5, embedding, markers).\n"
-             "omicverse and brisc: same AMD EPYC 9754 node (128 cores), fastest of 32/64/128 threads, "
-             "LocalMAP embedding. Scanpy and Seurat + BPCells:\n"
-             "values reported in the brisc paper on a 192-core node, UMAP embedding (not rerun here).",
-             fontsize=7, color="#555555", va="top")
-    for ext in ("png", "pdf"):
-        fig.savefig(f"{a.out}.{ext}", dpi=200, bbox_inches="tight", facecolor="white")
+            "Seurat": paper(a.results, "Seurat + BPCells")}
+    for theme in THEMES:
+        draw(vals, theme, a.out)
 
 
 if __name__ == "__main__":
