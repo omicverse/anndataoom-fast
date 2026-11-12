@@ -47,7 +47,6 @@ def draw(vals, theme, out):
     plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10})
     fig, (axt, axm) = plt.subplots(1, 2, figsize=(8, 2.6), sharey=True,
                                    gridspec_kw={"wspace": 0.12})
-    fig.patch.set_facecolor(th["bg"])
     tmax = max(v[0] for v in vals.values())
     mmax = max(v[1] for v in vals.values())
     for i, (lib, col) in enumerate(ROWS):
@@ -64,7 +63,7 @@ def draw(vals, theme, out):
     axt.set_yticklabels([lib for lib, _ in ROWS], color=th["ink"], fontsize=10.5)
     axt.set_ylim(len(ROWS) - 0.5, -0.5)
     for ax, title in ((axt, "Runtime (log scale)"), (axm, "Peak memory")):
-        ax.set_facecolor(th["bg"])
+        ax.set_facecolor("none")
         ax.set_title(title, loc="left", color=th["ink"], fontsize=11, fontweight="bold")
         ax.set_xticks([])
         ax.set_xticks([], minor=True)
@@ -73,7 +72,9 @@ def draw(vals, theme, out):
             sp.set_visible(False)
     fig.text(0.0, 0.0, "SEA-AD, 1.38M cells · full scRNA-seq workflow", color=th["muted"],
              fontsize=8.5, va="top")
-    fig.savefig(f"{out}_{theme}.png", dpi=200, bbox_inches="tight", facecolor=th["bg"])
+    # dark: transparent, so it sits on any dark page (GitHub, omicverse.org tiles)
+    fig.savefig(f"{out}_{theme}.png", dpi=200, bbox_inches="tight", facecolor=th["bg"],
+                transparent=theme == "dark")
     plt.close(fig)
 
 
