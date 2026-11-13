@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "anndataoom-fast"
-version = "0.1.5"
+version = "0.1.6"
 description = "Multithreaded C++ kernels for out-of-core single-cell preprocessing on top of anndataoom"
 readme = "README.md"
 requires-python = ">=3.9"
