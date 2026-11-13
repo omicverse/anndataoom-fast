@@ -114,7 +114,9 @@ void umap_optimize_euclidean(float* emb, int64_t n, int dim, const int32_t* head
     double alpha = p.initial_alpha;
     for (int ep = 0; ep < p.n_epochs; ++ep) {
         if (p.parallel) {
-#pragma omp parallel for schedule(static)
+            const int nt = (int)std::max<int64_t>(
+                1, std::min<int64_t>(omp_get_max_threads(), (E + 4095) / 4096));
+#pragma omp parallel for schedule(static) num_threads(nt)
             for (int64_t i = 0; i < E; ++i)
                 update_edge(i, ep, emb, dim, n, head, tail, eps, st, rng.data(), p, alpha);
         } else {
@@ -176,7 +178,12 @@ void umap_optimize_euclidean_det(float* emb, int64_t n, int dim, const int64_t* 
         for (int64_t b0 = 0; b0 < n; b0 += block) {
             const int64_t b1 = std::min<int64_t>(n, b0 + block);
             const int64_t e0 = indptr[b0];
-#pragma omp parallel for schedule(dynamic, 64)
+            // One thread per 64 vertices of the block at most: a small block on
+            // many threads spends its time in the barrier (and stalls when the
+            // node is oversubscribed).  The result does not depend on it.
+            const int nt = (int)std::max<int64_t>(
+                1, std::min<int64_t>(omp_get_max_threads(), (b1 - b0 + 63) / 64));
+#pragma omp parallel for schedule(dynamic, 64) num_threads(nt)
             for (int64_t v = b0; v < b1; ++v) {
                 float cur[64];
                 const float* self = emb + v * dim;
@@ -236,7 +243,10 @@ void umap_optimize_euclidean_det(float* emb, int64_t n, int dim, const int64_t* 
 
 void csr_matvec(const int64_t* indptr, const int32_t* indices, const double* data, int64_t n,
                 const double* x, double* y) {
-#pragma omp parallel for schedule(static, 2048)
+    // Small graphs: few threads (each wake-up costs more than the rows it does).
+    const int nt = (int)std::max<int64_t>(
+        1, std::min<int64_t>(omp_get_max_threads(), (n + 2047) / 2048));
+#pragma omp parallel for schedule(static, 2048) num_threads(nt)
     for (int64_t i = 0; i < n; ++i) {
         double s = 0.0;
         for (int64_t e = indptr[i]; e < indptr[i + 1]; ++e) s += data[e] * x[indices[e]];
